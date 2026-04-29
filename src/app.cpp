@@ -2,7 +2,9 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <algorithm>
+#include <string>
 #include "ecs/components.h"
 #include "game/item_catalog.h"
 #include "game/game_events.h"
@@ -13,7 +15,6 @@
 #  include <emscripten/html5.h>
 #  include <SDL_opengles2.h>
 #endif
-// GL symbols are available transitively through app.h → scene.h → shader.h.
 
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
@@ -23,10 +24,7 @@
 // Construction / destruction
 // ---------------------------------------------------------------------------
 App::App() = default;
-
-App::~App() {
-    shutdown();
-}
+App::~App() { shutdown(); }
 
 bool App::initWindow() {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
@@ -35,11 +33,10 @@ bool App::initWindow() {
     }
 
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE,   24);
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE,  8);
 
 #if defined(IMGUI_IMPL_OPENGL_ES2) || defined(__EMSCRIPTEN__)
-    // GL ES 2.0 + GLSL 100 (WebGL 1.0)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
@@ -59,7 +56,8 @@ bool App::initWindow() {
     const char* glslVersion = "#version 130";
 #endif
 
-    SDL_WindowFlags flags = (SDL_WindowFlags)(SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+    SDL_WindowFlags flags = (SDL_WindowFlags)(
+        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
     window_ = SDL_CreateWindow(title_.c_str(),
                                SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                winW_, winH_, flags);
@@ -75,10 +73,9 @@ bool App::initWindow() {
     }
     SDL_GL_MakeCurrent(window_, glctx_);
 #if !defined(__EMSCRIPTEN__)
-    SDL_GL_SetSwapInterval(1); // vsync
+    SDL_GL_SetSwapInterval(1);
 #endif
 
-    // ImGui init
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
@@ -90,22 +87,16 @@ bool App::initWindow() {
     return true;
 }
 
-bool App::initImGui() {
-    // ImGui already initialized inside initWindow() — this exists so the
-    // main entry point can keep the conventional 3-step init.
-    return true;
-}
+bool App::initImGui() { return true; }
 
 bool App::initScene() {
     if (!renderer_.init()) return false;
-    if (!scene_.initDefaultShaders()) {
-        std::fprintf(stderr, "WARNING: cube shader failed to compile on init\n");
-    }
+    if (!scene_.initDefaultShaders())
+        std::fprintf(stderr, "WARNING: object shader failed on init\n");
     renderer_.resize(800, 600);
 
-    // Load item definitions from LOOT.json
     if (!ItemCatalog::loadFromFile("LOOT.json"))
-        std::fprintf(stderr, "WARNING: LOOT.json failed to load — items unavailable\n");
+        std::fprintf(stderr, "WARNING: LOOT.json failed to load\n");
 
     return initGame();
 }
@@ -116,8 +107,11 @@ bool App::initGame() {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Entity creation
+// ---------------------------------------------------------------------------
 void App::initGameEntities() {
-    // Player car entity
+    // --- Player car ---
     playerEntity_ = registry_.create();
     registry_.emplace<PlayerTag>(playerEntity_);
     registry_.emplace<Transform>(playerEntity_);
@@ -131,27 +125,38 @@ void App::initGameEntities() {
                                 glm::vec3(0.8f, 0.15f, 0.1f));
     registry_.emplace<Inventory>(playerEntity_);
 
-    // Chase camera entity
-    auto camEnt = registry_.create();
-    registry_.emplace<CameraState>(camEnt);
-    registry_.emplace<CameraFollow>(camEnt, playerEntity_);
+    // --- Chase / free-look camera ---
+    cameraEcsEntity_ = registry_.create();
+    registry_.emplace<CameraTag>(cameraEcsEntity_);
+    registry_.emplace<CameraState>(cameraEcsEntity_);
+    registry_.emplace<CameraFollow>(cameraEcsEntity_, playerEntity_);
 
-    // Ground entity
+    // --- Ground ---
     auto ground = registry_.create();
     {
         Transform tf;
-        tf.scale = glm::vec3(scene_.ground.halfSize * 2.0f, 1.0f, scene_.ground.halfSize * 2.0f);
+        tf.scale = glm::vec3(20.0f, 1.0f, 20.0f); // 20×20 world units
         registry_.emplace<Transform>(ground, tf);
     }
     registry_.emplace<MeshRef>(ground, MeshId::Ground);
-    registry_.emplace<Material>(ground, scene_.groundShader.program, scene_.ground.color);
+    registry_.emplace<Material>(ground, scene_.groundShader.program,
+                                glm::vec3(0.28f, 0.30f, 0.26f));
 
-    // Directional light entity
-    auto lightEnt = registry_.create();
-    registry_.emplace<DirectionalLight>(lightEnt,
-        scene_.light.direction, scene_.light.color, scene_.light.position, scene_.light.ambient);
+    // --- Directional light — rendered as a colored sphere ---
+    lightEntity_ = registry_.create();
+    registry_.emplace<DirectionalLight>(lightEntity_);   // defaults: dir, white, pos (2,3,2)
+    {
+        Transform tf;
+        tf.position = glm::vec3(2.0f, 3.0f, 2.0f);
+        tf.scale    = glm::vec3(0.3f);
+        registry_.emplace<Transform>(lightEntity_, tf);
+    }
+    registry_.emplace<MeshRef>(lightEntity_, MeshId::Sphere);
+    // Color synced from DirectionalLight.color each frame in frame()
+    registry_.emplace<Material>(lightEntity_, scene_.lightShader.program,
+                                glm::vec3(1.0f, 1.0f, 1.0f));
 
-    // Spawn a handful of world items for testing
+    // --- World items ---
     spawnWorldItem(ItemId::NitroBoost,       glm::vec3( 5.0f, 0.0f,  0.0f));
     spawnWorldItem(ItemId::FuelCanister,     glm::vec3(-8.0f, 0.0f,  3.0f));
     spawnWorldItem(ItemId::TurboWheels,      glm::vec3( 0.0f, 0.0f,-10.0f));
@@ -170,8 +175,7 @@ void App::spawnWorldItem(ItemId id, const glm::vec3& pos) {
     registry_.emplace<MeshRef>(ent, mesh);
     glm::vec3 col = def ? def->color : glm::vec3(1.0f);
     registry_.emplace<Material>(ent, scene_.cubeShader.program, col);
-    registry_.emplace<ItemComponent>(ent, id, 1u,
-                                     def ? def->maxStack : 1u);
+    registry_.emplace<ItemComponent>(ent, id, 1u, def ? def->maxStack : 1u);
 }
 
 void App::connectEventListeners() {
@@ -189,6 +193,9 @@ void App::connectEventListeners() {
         .connect<&InventoryPanel::onGearEquipped>(inventoryPanel_);
 }
 
+// ---------------------------------------------------------------------------
+// Per-frame systems
+// ---------------------------------------------------------------------------
 void App::tickSystems(float dt) {
     const uint8_t* keys = SDL_GetKeyboardState(nullptr);
     inputSys_.update(registry_, keys);
@@ -211,34 +218,61 @@ void App::syncShaderProgramsToRegistry() {
             case MeshId::Ground:
                 mat.program = scene_.groundShader.ok ? scene_.groundShader.program : 0;
                 break;
-            case MeshId::Cube:
-            case MeshId::CarBody:
-            case MeshId::CarWheel:
             case MeshId::Sphere:
+                mat.program = scene_.lightShader.ok  ? scene_.lightShader.program  : 0;
+                break;
             default:
-                mat.program = scene_.cubeShader.ok ? scene_.cubeShader.program : 0;
+                mat.program = scene_.cubeShader.ok   ? scene_.cubeShader.program   : 0;
                 break;
         }
     });
 }
 
 // ---------------------------------------------------------------------------
-// Editor helpers
+// Entity helpers
 // ---------------------------------------------------------------------------
-void App::openShaderEditorFor(SceneItem item) {
-    editorTargetItem_ = item;
-    ShaderBundle& sb  = scene_.shaderFor(item);
+ShaderSlot App::slotForEntity(entt::entity e) const {
+    if (e == cameraEcsEntity_) return ShaderSlot::Camera;
+    if (registry_.all_of<DirectionalLight>(e)) return ShaderSlot::Light;
+    if (registry_.all_of<MeshRef>(e)) {
+        if (registry_.get<MeshRef>(e).meshId == MeshId::Ground)
+            return ShaderSlot::Ground;
+    }
+    return ShaderSlot::Object;
+}
+
+std::string App::entityDisplayName(entt::entity e) const {
+    if (e == cameraEcsEntity_)
+        return "Camera";
+    if (registry_.all_of<PlayerTag>(e))
+        return "Player";
+    if (registry_.all_of<DirectionalLight>(e))
+        return "Light";
+    if (registry_.all_of<ItemWorldTag>(e)) {
+        if (registry_.all_of<ItemComponent>(e)) {
+            const auto& ic  = registry_.get<ItemComponent>(e);
+            const ItemDef* def = getItemDef(ic.itemId);
+            if (def) return std::string(def->name);
+        }
+        return "Item";
+    }
+    if (registry_.all_of<MeshRef>(e)) {
+        if (registry_.get<MeshRef>(e).meshId == MeshId::Ground)
+            return "Ground";
+    }
+    return "Entity";
+}
+
+void App::openShaderEditorFor(ShaderSlot slot) {
+    editorTargetSlot_ = slot;
+    ShaderBundle& sb  = scene_.shaderFor(slot);
     editorVertBuf_    = sb.vertSrc;
     editorFragBuf_    = sb.fragSrc;
     showShaderPopup_  = true;
 }
 
 void App::recompileEdited() {
-    ShaderBundle& sb = scene_.shaderFor(editorTargetItem_);
-    // ImGui writes directly into the std::string's internal buffer but never
-    // updates size().  Resize to strlen so the copy below carries only the
-    // actual text, not stale bytes (which would embed a null mid-source and
-    // cause the shader compiler to report "premature EOF").
+    ShaderBundle& sb = scene_.shaderFor(editorTargetSlot_);
     editorVertBuf_.resize(strlen(editorVertBuf_.data()));
     editorFragBuf_.resize(strlen(editorFragBuf_.data()));
     sb.vertSrc = editorVertBuf_;
@@ -253,15 +287,14 @@ void App::recompileEdited() {
         sb.ok      = true;
         sb.log     = "Compiled OK\n";
     } else {
-        sb.ok      = false;
-        sb.log     = log;
+        sb.ok  = false;
+        sb.log = log;
     }
-    // Keep ECS Material components in sync with the newly compiled programs
     syncShaderProgramsToRegistry();
 }
 
 // ---------------------------------------------------------------------------
-// UI: side panel
+// UI: side panel (ECS entity list)
 // ---------------------------------------------------------------------------
 void App::drawPanel() {
     if (!showPanel_) return;
@@ -269,75 +302,159 @@ void App::drawPanel() {
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x, vp->WorkPos.y));
     ImGui::SetNextWindowSize(ImVec2(360.0f, vp->WorkSize.y));
-    ImGui::Begin("Inspector (press 'p' to toggle)", &showPanel_,
+    ImGui::Begin("Inspector (P = toggle)", &showPanel_,
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                  ImGuiWindowFlags_NoCollapse);
 
-    // ---- Scene list ------------------------------------------------
+    // ---- Scene entity list -----------------------------------------------
     if (ImGui::CollapsingHeader("Scene", ImGuiTreeNodeFlags_DefaultOpen)) {
-        for (int i = 0; i < (int)SceneItem::Count; ++i) {
-            const bool selected = (int)selectedItem_ == i;
-            if (ImGui::Selectable(sceneItemName((SceneItem)i), selected))
-                selectedItem_ = (SceneItem)i;
+
+        // Collect all entities that should appear in the list, in a stable order.
+        // We walk the registry and bucket by category.
+        std::vector<entt::entity> listed;
+
+        // 1. Camera always first
+        if (registry_.valid(cameraEcsEntity_))
+            listed.push_back(cameraEcsEntity_);
+
+        // 2. Player
+        for (auto e : registry_.view<PlayerTag>())
+            listed.push_back(e);
+
+        // 3. Ground
+        for (auto e : registry_.view<MeshRef>())
+            if (registry_.get<MeshRef>(e).meshId == MeshId::Ground)
+                listed.push_back(e);
+
+        // 4. Light
+        for (auto e : registry_.view<DirectionalLight>())
+            if (!registry_.all_of<PlayerTag>(e))
+                listed.push_back(e);
+
+        // 5. World items
+        for (auto e : registry_.view<ItemWorldTag>())
+            listed.push_back(e);
+
+        for (entt::entity e : listed) {
+            const bool selected = (e == selectedEntity_);
+            std::string name = entityDisplayName(e);
+            ImGui::PushID((int)(uint32_t)e);
+            if (ImGui::Selectable(name.c_str(), selected))
+                selectedEntity_ = e;
+            ImGui::PopID();
         }
     }
 
     ImGui::Separator();
 
-    // ---- Per-item uniforms ----------------------------------------
+    // ---- Per-entity uniforms --------------------------------------------
     if (ImGui::CollapsingHeader("Uniforms", ImGuiTreeNodeFlags_DefaultOpen)) {
-        switch (selectedItem_) {
-            case SceneItem::Ground: {
-                ImGui::TextDisabled("Appearance");
-                ImGui::ColorEdit3("Color",    &scene_.ground.color.x);
-                ImGui::SliderFloat("Half Size", &scene_.ground.halfSize, 1.0f, 50.0f);
-                break;
+        if (!registry_.valid(selectedEntity_)) {
+            ImGui::TextDisabled("(select an entity above)");
+        }
+        else if (selectedEntity_ == cameraEcsEntity_) {
+            // Camera — show live state
+            ImGui::TextDisabled("Chase Camera");
+            auto* cam = registry_.try_get<CameraState>(cameraEcsEntity_);
+            if (cam) {
+                ImGui::SliderFloat("FOV (deg)", &cam->fovDeg, 10.0f, 120.0f);
+                ImGui::TextDisabled("Position (follows car)");
+                ImGui::Text("  %.2f, %.2f, %.2f",
+                            cam->position.x, cam->position.y, cam->position.z);
+                ImGui::TextDisabled("Forward (car direction)");
+                ImGui::Text("  %.2f, %.2f, %.2f",
+                            cam->forward.x, cam->forward.y, cam->forward.z);
             }
-            case SceneItem::Cube: {
+            auto* follow = registry_.try_get<CameraFollow>(cameraEcsEntity_);
+            if (follow) {
+                ImGui::Separator();
+                ImGui::TextDisabled("Follow offset");
+                ImGui::SliderFloat("Height",   &follow->offset.y, 0.5f, 20.0f);
+                ImGui::SliderFloat("Distance", &follow->offset.z, 1.0f, 30.0f);
+                ImGui::SliderFloat("Lag",      &follow->lag,      1.0f, 20.0f);
+            }
+        }
+        else if (registry_.all_of<DirectionalLight>(selectedEntity_)) {
+            auto& dl = registry_.get<DirectionalLight>(selectedEntity_);
+
+            // Light type selector
+            ImGui::TextDisabled("Light Type");
+            int typeIdx = (int)dl.type;
+            ImGui::RadioButton("Ambient",     &typeIdx, 0); ImGui::SameLine();
+            ImGui::RadioButton("Directional", &typeIdx, 1); ImGui::SameLine();
+            ImGui::RadioButton("Spot",        &typeIdx, 2);
+            dl.type = (LightType)typeIdx;
+
+            ImGui::Separator();
+            ImGui::ColorEdit3("Color",     &dl.color.x);
+            ImGui::SliderFloat3("Position",&dl.position.x, -20.0f, 20.0f);
+
+            if (dl.type == LightType::Directional || dl.type == LightType::Spot) {
+                ImGui::SliderFloat3("Direction", &dl.direction.x, -1.0f, 1.0f);
+            }
+            if (dl.type == LightType::Spot) {
+                ImGui::SliderFloat("Spot Cutoff (deg)", &dl.spotCutoff, 1.0f, 89.0f);
+            }
+
+            // Keep light Transform position in sync with DirectionalLight.position
+            if (auto* tf = registry_.try_get<Transform>(selectedEntity_))
+                tf->position = dl.position;
+        }
+        else {
+            // Generic mesh entity: Transform + Material
+            if (auto* tf = registry_.try_get<Transform>(selectedEntity_)) {
                 ImGui::TextDisabled("Transform");
-                ImGui::SliderFloat3("Position", &scene_.cube.position.x, -5.0f, 5.0f);
-                ImGui::SliderFloat3("Rotation (deg)", &scene_.cube.rotationDeg.x, -180.0f, 180.0f);
-                ImGui::SliderFloat3("Scale",    &scene_.cube.scale.x,     0.05f, 5.0f);
+
+                ImGui::SliderFloat3("Position", &tf->position.x, -50.0f, 50.0f);
+
+                // Convert quaternion → Euler for display, then write back
+                glm::vec3 euler = glm::degrees(glm::eulerAngles(tf->rotation));
+                if (ImGui::SliderFloat3("Rotation (deg)", &euler.x, -180.0f, 180.0f))
+                    tf->rotation = glm::quat(glm::radians(euler));
+
+                ImGui::SliderFloat3("Scale", &tf->scale.x, 0.01f, 20.0f);
+            }
+            if (auto* mat = registry_.try_get<Material>(selectedEntity_)) {
                 ImGui::Separator();
                 ImGui::TextDisabled("Material");
-                ImGui::ColorEdit3("Lighting Color", &scene_.cube.lightingColor.x);
-                break;
+                ImGui::ColorEdit3("Color", &mat->color.x);
+                ImGui::Checkbox("Visible", &mat->visible);
             }
-            case SceneItem::Camera: {
-                ImGui::SliderFloat ("FOV (deg)",   &scene_.camera.fovDeg, 10.0f, 120.0f);
-                ImGui::SliderFloat3("Position",    &scene_.camera.position.x, -10.0f, 10.0f);
-                ImGui::SliderFloat3("Rotation",    &scene_.camera.rotationDeg.x, -180.0f, 180.0f);
-                break;
+            // Item info (read-only)
+            if (registry_.all_of<ItemComponent>(selectedEntity_)) {
+                const auto& ic  = registry_.get<ItemComponent>(selectedEntity_);
+                const ItemDef* def = getItemDef(ic.itemId);
+                ImGui::Separator();
+                ImGui::TextDisabled("Item");
+                ImGui::Text("Name:  %s", def ? def->name.c_str() : "?");
+                ImGui::Text("Stack: %u / %u", ic.stackSize, ic.maxStack);
             }
-            case SceneItem::Light: {
-                ImGui::Checkbox("Directional",  &scene_.light.directional);
-                ImGui::SameLine();
-                ImGui::Checkbox("Ambient",      &scene_.light.ambient);
-                ImGui::SliderFloat3("Direction", &scene_.light.direction.x, -1.0f, 1.0f);
-                ImGui::SliderFloat3("Position",  &scene_.light.position.x,  -10.0f, 10.0f);
-                ImGui::ColorEdit3 ("Color",      &scene_.light.color.x);
-                break;
-            }
-            default: break;
         }
     }
 
     ImGui::Separator();
 
-    // ---- Shader editor entry --------------------------------------
+    // ---- Shader editor entry -------------------------------------------
     if (ImGui::CollapsingHeader("Shader", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ShaderBundle& sb = scene_.shaderFor(selectedItem_);
-        ImGui::Text("Status: %s", sb.ok ? "OK" : "ERROR");
-        if (!sb.ok && !sb.log.empty()) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 0.4f, 0.4f, 1));
-            ImGui::TextWrapped("%s", sb.log.c_str());
-            ImGui::PopStyleColor();
+        if (registry_.valid(selectedEntity_)) {
+            ShaderSlot slot     = slotForEntity(selectedEntity_);
+            ShaderBundle& sb    = scene_.shaderFor(slot);
+
+            const char* slotNames[] = { "Ground", "Object", "Camera", "Light" };
+            ImGui::TextDisabled("Slot: %s", slotNames[(int)slot]);
+            ImGui::Text("Status: %s", sb.ok ? "OK" : "ERROR");
+            if (!sb.ok && !sb.log.empty()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 0.4f, 0.4f, 1));
+                ImGui::TextWrapped("%s", sb.log.c_str());
+                ImGui::PopStyleColor();
+            }
+            if (ImGui::Button("Edit Shader Source..."))
+                openShaderEditorFor(slot);
+            ImGui::SameLine();
+            ImGui::TextDisabled("(opens popup)");
+        } else {
+            ImGui::TextDisabled("(select an entity above)");
         }
-        if (ImGui::Button("Edit Shader Source...")) {
-            openShaderEditorFor(selectedItem_);
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("(opens popup)");
     }
 
     ImGui::Separator();
@@ -353,99 +470,78 @@ void App::drawShaderPopup() {
 
     ImGui::SetNextWindowSize(ImVec2(800, 600), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Shader Editor", &showShaderPopup_, ImGuiWindowFlags_NoCollapse)) {
-        ImGui::Text("Editing %s shaders", sceneItemName(editorTargetItem_));
+        const char* slotNames[] = { "Ground", "Object", "Camera", "Light" };
+        ImGui::Text("Editing: %s shader", slotNames[(int)editorTargetSlot_]);
         ImGui::SameLine();
-        if (ImGui::Button("Save & Recompile")) {
-            recompileEdited();
-        }
+        if (ImGui::Button("Save & Recompile")) recompileEdited();
         ImGui::SameLine();
         if (ImGui::Button("Revert")) {
-            ShaderBundle& sb = scene_.shaderFor(editorTargetItem_);
+            ShaderBundle& sb = scene_.shaderFor(editorTargetSlot_);
             editorVertBuf_   = sb.vertSrc;
             editorFragBuf_   = sb.fragSrc;
         }
         ImGui::SameLine();
-        if (ImGui::Button("Close")) {
-            showShaderPopup_ = false;
-        }
+        if (ImGui::Button("Close")) showShaderPopup_ = false;
 
-        ShaderBundle& sb = scene_.shaderFor(editorTargetItem_);
+        ShaderBundle& sb = scene_.shaderFor(editorTargetSlot_);
         if (sb.ok) {
-            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1.0f), "Compiled OK");
+            ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.3f, 1), "Compiled OK");
         } else {
-            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Compile error:");
+            ImGui::TextColored(ImVec4(1, 0.3f, 0.3f, 1), "Compile error:");
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 0.6f, 0.6f, 1));
-            ImGui::InputTextMultiline("##log",
-                                      (char*)sb.log.c_str(),
+            ImGui::InputTextMultiline("##log", (char*)sb.log.c_str(),
                                       sb.log.size() + 1,
                                       ImVec2(-1, 60),
                                       ImGuiInputTextFlags_ReadOnly);
             ImGui::PopStyleColor();
         }
 
-        // Two side-by-side text editors for vertex / fragment
         const ImVec2 avail = ImGui::GetContentRegionAvail();
-        const float halfH  = avail.y * 0.5f - 12.0f;
+        const float  halfH = avail.y * 0.5f - 12.0f;
+
+        auto textEditor = [](const char* label, std::string& buf, float h) {
+            buf.reserve(buf.size() + 4096);
+            ImGui::InputTextMultiline(label, &buf[0], buf.capacity(),
+                                      ImVec2(-1, h),
+                                      ImGuiInputTextFlags_AllowTabInput,
+                                      [](ImGuiInputTextCallbackData* d) -> int {
+                                          auto* s = (std::string*)d->UserData;
+                                          if (d->EventFlag == ImGuiInputTextFlags_CallbackResize) {
+                                              s->resize(d->BufTextLen);
+                                              d->Buf = (char*)s->data();
+                                          }
+                                          return 0;
+                                      }, &buf);
+        };
 
         ImGui::TextDisabled("Vertex shader");
-        // Resize the std::string buffer to leave room for typing
-        editorVertBuf_.reserve(editorVertBuf_.size() + 4096);
-        ImGui::InputTextMultiline("##vert",
-                                  &editorVertBuf_[0],
-                                  editorVertBuf_.capacity(),
-                                  ImVec2(-1, halfH),
-                                  ImGuiInputTextFlags_AllowTabInput,
-                                  [](ImGuiInputTextCallbackData* data) -> int {
-                                      // Resize callback — keep std::string sized to actual content
-                                      auto* str = static_cast<std::string*>(data->UserData);
-                                      if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
-                                          str->resize(data->BufTextLen);
-                                          data->Buf = (char*)str->data();
-                                      }
-                                      return 0;
-                                  },
-                                  &editorVertBuf_);
-
+        textEditor("##vert", editorVertBuf_, halfH);
         ImGui::TextDisabled("Fragment shader");
-        editorFragBuf_.reserve(editorFragBuf_.size() + 4096);
-        ImGui::InputTextMultiline("##frag",
-                                  &editorFragBuf_[0],
-                                  editorFragBuf_.capacity(),
-                                  ImVec2(-1, halfH),
-                                  ImGuiInputTextFlags_AllowTabInput,
-                                  [](ImGuiInputTextCallbackData* data) -> int {
-                                      auto* str = static_cast<std::string*>(data->UserData);
-                                      if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
-                                          str->resize(data->BufTextLen);
-                                          data->Buf = (char*)str->data();
-                                      }
-                                      return 0;
-                                  },
-                                  &editorFragBuf_);
+        textEditor("##frag", editorFragBuf_, halfH);
     }
     ImGui::End();
 }
 
 // ---------------------------------------------------------------------------
-// One frame
+// Main frame
 // ---------------------------------------------------------------------------
 bool App::frame() {
-    // Compute delta time
     static Uint64 lastTick = SDL_GetPerformanceCounter();
     Uint64 now = SDL_GetPerformanceCounter();
-    float dt = (float)(now - lastTick) / (float)SDL_GetPerformanceFrequency();
-    dt = std::min(dt, 0.05f);  // cap at 50 ms to avoid spiral of death
+    float  dt  = (float)(now - lastTick) / (float)SDL_GetPerformanceFrequency();
+    dt = std::min(dt, 0.05f);
     lastTick = now;
 
+    // --- Event loop ---
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         ImGui_ImplSDL2_ProcessEvent(&e);
         if (e.type == SDL_QUIT) running_ = false;
         if (e.type == SDL_WINDOWEVENT &&
             e.window.event == SDL_WINDOWEVENT_CLOSE &&
-            e.window.windowID == SDL_GetWindowID(window_)) {
+            e.window.windowID == SDL_GetWindowID(window_))
             running_ = false;
-        }
+
         if (e.type == SDL_KEYDOWN && !ImGui::GetIO().WantTextInput) {
             if (e.key.keysym.sym == SDLK_p)
                 showPanel_ = !showPanel_;
@@ -454,14 +550,22 @@ bool App::frame() {
         }
     }
 
-    // Tick game systems
+    // --- Tick game ---
     if (gameRunning_) tickSystems(dt);
 
+    // --- Sync light sphere color from its DirectionalLight component ---
+    if (registry_.valid(lightEntity_)) {
+        auto& dl  = registry_.get<DirectionalLight>(lightEntity_);
+        auto& mat = registry_.get<Material>(lightEntity_);
+        mat.color = dl.color;
+    }
+
+    // --- ImGui frame ---
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
 
-    // ----- 3D viewport — locked fullscreen behind the inspector panel ------
+    // Fullscreen background viewport
     {
         ImGuiViewport* vp = ImGui::GetMainViewport();
         ImGui::SetNextWindowPos(vp->WorkPos);
@@ -483,10 +587,7 @@ bool App::frame() {
         vpH_ = (int)sz.y; if (vpH_ < 1) vpH_ = 1;
         renderer_.resize(vpW_, vpH_);
 
-        // ECS-driven render
         GLuint tex = renderSys_.render(registry_, renderer_, scene_);
-
-        // V-flip: ImGui's UV origin is top-left; OpenGL FBO origin is bottom-left.
         ImGui::Image((ImTextureID)(intptr_t)tex,
                      ImVec2((float)vpW_, (float)vpH_),
                      ImVec2(0, 1), ImVec2(1, 0));
@@ -497,7 +598,7 @@ bool App::frame() {
     drawShaderPopup();
     drawGameUI();
 
-    // ----- Render --------------------------------------------------------
+    // --- Render ---
     ImGui::Render();
     int dispW, dispH;
     SDL_GL_GetDrawableSize(window_, &dispW, &dispH);
@@ -514,13 +615,11 @@ bool App::frame() {
 // Main loop
 // ---------------------------------------------------------------------------
 void App::mainLoopThunk(void* userdata) {
-    auto* self = static_cast<App*>(userdata);
-    self->frame();
+    static_cast<App*>(userdata)->frame();
 }
 
 void App::run() {
 #if defined(__EMSCRIPTEN__)
-    // The emscripten main loop owns the call stack — never returns.
     emscripten_set_main_loop_arg(&App::mainLoopThunk, this, 0, 1);
 #else
     while (running_) {
@@ -531,9 +630,6 @@ void App::run() {
 
 void App::shutdown() {
     if (glctx_) {
-        // Destroy GL resources while the context is still alive.
-        // The member destructors run after ~App() returns, by which point
-        // the context is gone — calling GL functions then causes a Bus Error.
         renderer_.destroy();
         scene_.destroy();
         ImGui_ImplOpenGL3_Shutdown();

@@ -3,33 +3,34 @@
 
 #include <cstdio>
 #include <cstdint>
+#include <cmath>
+#include <vector>
 
-// 24 vertices (position + normal) — one face's worth of normals per face
-// gives flat shading when the same normal is shared across both triangles
-// of a face. Index buffer of 36 indices.
 struct Vertex { float px, py, pz, nx, ny, nz; };
 
+// ---------------------------------------------------------------------------
+// Cube geometry (flat-shaded, 24 verts / 36 indices)
+// ---------------------------------------------------------------------------
 static const Vertex kCubeVerts[] = {
-    // +X face
-    { 0.5f,-0.5f,-0.5f,  1, 0, 0}, { 0.5f, 0.5f,-0.5f,  1, 0, 0},
-    { 0.5f, 0.5f, 0.5f,  1, 0, 0}, { 0.5f,-0.5f, 0.5f,  1, 0, 0},
-    // -X face
-    {-0.5f,-0.5f, 0.5f, -1, 0, 0}, {-0.5f, 0.5f, 0.5f, -1, 0, 0},
-    {-0.5f, 0.5f,-0.5f, -1, 0, 0}, {-0.5f,-0.5f,-0.5f, -1, 0, 0},
-    // +Y face
-    {-0.5f, 0.5f,-0.5f,  0, 1, 0}, {-0.5f, 0.5f, 0.5f,  0, 1, 0},
-    { 0.5f, 0.5f, 0.5f,  0, 1, 0}, { 0.5f, 0.5f,-0.5f,  0, 1, 0},
-    // -Y face
-    {-0.5f,-0.5f, 0.5f,  0,-1, 0}, {-0.5f,-0.5f,-0.5f,  0,-1, 0},
-    { 0.5f,-0.5f,-0.5f,  0,-1, 0}, { 0.5f,-0.5f, 0.5f,  0,-1, 0},
-    // +Z face
-    {-0.5f,-0.5f, 0.5f,  0, 0, 1}, { 0.5f,-0.5f, 0.5f,  0, 0, 1},
-    { 0.5f, 0.5f, 0.5f,  0, 0, 1}, {-0.5f, 0.5f, 0.5f,  0, 0, 1},
-    // -Z face
-    { 0.5f,-0.5f,-0.5f,  0, 0,-1}, {-0.5f,-0.5f,-0.5f,  0, 0,-1},
-    {-0.5f, 0.5f,-0.5f,  0, 0,-1}, { 0.5f, 0.5f,-0.5f,  0, 0,-1},
+    // +X
+    { 0.5f,-0.5f,-0.5f, 1,0,0}, { 0.5f, 0.5f,-0.5f, 1,0,0},
+    { 0.5f, 0.5f, 0.5f, 1,0,0}, { 0.5f,-0.5f, 0.5f, 1,0,0},
+    // -X
+    {-0.5f,-0.5f, 0.5f,-1,0,0}, {-0.5f, 0.5f, 0.5f,-1,0,0},
+    {-0.5f, 0.5f,-0.5f,-1,0,0}, {-0.5f,-0.5f,-0.5f,-1,0,0},
+    // +Y
+    {-0.5f, 0.5f,-0.5f, 0,1,0}, {-0.5f, 0.5f, 0.5f, 0,1,0},
+    { 0.5f, 0.5f, 0.5f, 0,1,0}, { 0.5f, 0.5f,-0.5f, 0,1,0},
+    // -Y
+    {-0.5f,-0.5f, 0.5f, 0,-1,0}, {-0.5f,-0.5f,-0.5f, 0,-1,0},
+    { 0.5f,-0.5f,-0.5f, 0,-1,0}, { 0.5f,-0.5f, 0.5f, 0,-1,0},
+    // +Z
+    {-0.5f,-0.5f, 0.5f, 0,0,1}, { 0.5f,-0.5f, 0.5f, 0,0,1},
+    { 0.5f, 0.5f, 0.5f, 0,0,1}, {-0.5f, 0.5f, 0.5f, 0,0,1},
+    // -Z
+    { 0.5f,-0.5f,-0.5f, 0,0,-1}, {-0.5f,-0.5f,-0.5f, 0,0,-1},
+    {-0.5f, 0.5f,-0.5f, 0,0,-1}, { 0.5f, 0.5f,-0.5f, 0,0,-1},
 };
-
 static const uint16_t kCubeIdx[] = {
      0, 1, 2,  0, 2, 3,
      4, 5, 6,  4, 6, 7,
@@ -39,29 +40,35 @@ static const uint16_t kCubeIdx[] = {
     20,21,22, 20,22,23,
 };
 
-// Unit quad flat on Y=0 with normal (0,1,0).  The model matrix in scene.cpp
-// scales it to the ground's world-space size.
+// ---------------------------------------------------------------------------
+// Ground geometry (unit quad at Y=0)
+// ---------------------------------------------------------------------------
 static const Vertex kGroundVerts[] = {
-    {-0.5f, 0.0f, -0.5f,  0, 1, 0},
-    {-0.5f, 0.0f,  0.5f,  0, 1, 0},
-    { 0.5f, 0.0f,  0.5f,  0, 1, 0},
-    { 0.5f, 0.0f, -0.5f,  0, 1, 0},
+    {-0.5f,0.0f,-0.5f, 0,1,0},
+    {-0.5f,0.0f, 0.5f, 0,1,0},
+    { 0.5f,0.0f, 0.5f, 0,1,0},
+    { 0.5f,0.0f,-0.5f, 0,1,0},
 };
-static const uint16_t kGroundIdx[] = { 0, 1, 2,  0, 2, 3 };
+static const uint16_t kGroundIdx[] = { 0,1,2, 0,2,3 };
 
-void Renderer::createGroundMesh() {
+// ---------------------------------------------------------------------------
+// Mesh creation helpers
+// ---------------------------------------------------------------------------
+static void uploadMesh(const void* verts, GLsizeiptr vBytes,
+                       const uint16_t* idx, GLsizeiptr iBytes,
+                       GLuint& vao, GLuint& vbo, GLuint& ibo)
+{
 #if !defined(IMGUI_IMPL_OPENGL_ES2) && !defined(__EMSCRIPTEN__)
-    glGenVertexArrays(1, &groundVao_);
-    glBindVertexArray(groundVao_);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
 #endif
-    glGenBuffers(1, &groundVbo_);
-    glBindBuffer(GL_ARRAY_BUFFER, groundVbo_);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(kGroundVerts), kGroundVerts, GL_STATIC_DRAW);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, vBytes, verts, GL_STATIC_DRAW);
 
-    glGenBuffers(1, &groundIbo_);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, groundIbo_);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(kGroundIdx), kGroundIdx, GL_STATIC_DRAW);
-    groundIndexCount_ = sizeof(kGroundIdx) / sizeof(kGroundIdx[0]);
+    glGenBuffers(1, &ibo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, iBytes, idx, GL_STATIC_DRAW);
 
 #if !defined(IMGUI_IMPL_OPENGL_ES2) && !defined(__EMSCRIPTEN__)
     glBindVertexArray(0);
@@ -70,37 +77,65 @@ void Renderer::createGroundMesh() {
 #endif
 }
 
+void Renderer::createGroundMesh() {
+    uploadMesh(kGroundVerts, sizeof(kGroundVerts),
+               kGroundIdx,   sizeof(kGroundIdx),
+               groundVao_, groundVbo_, groundIbo_);
+    groundIndexCount_ = (GLsizei)(sizeof(kGroundIdx) / sizeof(kGroundIdx[0]));
+}
+
 void Renderer::createCubeMesh() {
-#if !defined(IMGUI_IMPL_OPENGL_ES2) && !defined(__EMSCRIPTEN__)
-    glGenVertexArrays(1, &cubeVao_);
-    glBindVertexArray(cubeVao_);
-#endif
-    glGenBuffers(1, &cubeVbo_);
-    glBindBuffer(GL_ARRAY_BUFFER, cubeVbo_);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(kCubeVerts), kCubeVerts, GL_STATIC_DRAW);
+    uploadMesh(kCubeVerts, sizeof(kCubeVerts),
+               kCubeIdx,   sizeof(kCubeIdx),
+               cubeVao_, cubeVbo_, cubeIbo_);
+    cubeIndexCount_ = (GLsizei)(sizeof(kCubeIdx) / sizeof(kCubeIdx[0]));
+}
 
-    glGenBuffers(1, &cubeIbo_);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cubeIbo_);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(kCubeIdx), kCubeIdx, GL_STATIC_DRAW);
-    cubeIndexCount_ = sizeof(kCubeIdx) / sizeof(kCubeIdx[0]);
+void Renderer::createSphereMesh() {
+    const int stacks = 16, slices = 16;
+    std::vector<Vertex>   verts;
+    std::vector<uint16_t> indices;
+    verts.reserve((stacks + 1) * (slices + 1));
 
-#if !defined(IMGUI_IMPL_OPENGL_ES2) && !defined(__EMSCRIPTEN__)
-    glBindVertexArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-#endif
+    for (int i = 0; i <= stacks; ++i) {
+        float phi = (float)M_PI * i / stacks;       // 0 … π (top → bottom)
+        float sp  = std::sin(phi), cp = std::cos(phi);
+        for (int j = 0; j <= slices; ++j) {
+            float theta = 2.0f * (float)M_PI * j / slices;
+            float st = std::sin(theta), ct = std::cos(theta);
+            float nx = sp * ct, ny = cp, nz = sp * st;
+            verts.push_back({ 0.5f*nx, 0.5f*ny, 0.5f*nz, nx, ny, nz });
+        }
+    }
+    for (int i = 0; i < stacks; ++i) {
+        for (int j = 0; j < slices; ++j) {
+            uint16_t a = (uint16_t)(i * (slices + 1) + j);
+            uint16_t b = (uint16_t)(a + slices + 1);
+            indices.push_back(a);   indices.push_back(b);   indices.push_back(a + 1);
+            indices.push_back(b);   indices.push_back(b + 1); indices.push_back(a + 1);
+        }
+    }
+
+    uploadMesh(verts.data(),   (GLsizeiptr)(verts.size()   * sizeof(Vertex)),
+               indices.data(), (GLsizeiptr)(indices.size() * sizeof(uint16_t)),
+               sphereVao_, sphereVbo_, sphereIbo_);
+    sphereIndexCount_ = (GLsizei)indices.size();
 }
 
 bool Renderer::init() {
     createGroundMesh();
     createCubeMesh();
+    createSphereMesh();
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// FBO management
+// ---------------------------------------------------------------------------
 void Renderer::destroyFbo() {
-    if (fbo_)      { glDeleteFramebuffers(1, &fbo_);      fbo_ = 0; }
-    if (colorTex_) { glDeleteTextures(1, &colorTex_);     colorTex_ = 0; }
-    if (depthRb_)  { glDeleteRenderbuffers(1, &depthRb_); depthRb_ = 0; }
+    if (fbo_)      { glDeleteFramebuffers(1,  &fbo_);      fbo_      = 0; }
+    if (colorTex_) { glDeleteTextures(1,      &colorTex_); colorTex_ = 0; }
+    if (depthRb_)  { glDeleteRenderbuffers(1, &depthRb_);  depthRb_  = 0; }
 }
 
 void Renderer::resize(int w, int h) {
@@ -109,8 +144,7 @@ void Renderer::resize(int w, int h) {
     if (w == fbWidth_ && h == fbHeight_ && fbo_ != 0) return;
 
     destroyFbo();
-    fbWidth_  = w;
-    fbHeight_ = h;
+    fbWidth_ = w; fbHeight_ = h;
 
     glGenFramebuffers(1, &fbo_);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
@@ -122,86 +156,23 @@ void Renderer::resize(int w, int h) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                           GL_TEXTURE_2D, colorTex_, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, colorTex_, 0);
 
     glGenRenderbuffers(1, &depthRb_);
     glBindRenderbuffer(GL_RENDERBUFFER, depthRb_);
     glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, w, h);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
-                              GL_RENDERBUFFER, depthRb_);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthRb_);
 
-    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if (status != GL_FRAMEBUFFER_COMPLETE) {
-        std::fprintf(stderr, "FBO incomplete: 0x%x\n", status);
-    }
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        std::fprintf(stderr, "FBO incomplete\n");
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glBindTexture(GL_TEXTURE_2D, 0);
     glBindRenderbuffer(GL_RENDERBUFFER, 0);
 }
 
-GLuint Renderer::render(const Scene& scene) {
-    if (fbo_ == 0) return 0;
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
-    glViewport(0, 0, fbWidth_, fbHeight_);
-
-    glClearColor(0.08f, 0.10f, 0.13f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_BACK);
-    glFrontFace(GL_CCW);
-
-    // Helper: bind a mesh, set attrib pointers, draw, unbind.
-    auto drawMesh = [&](GLuint vao, GLuint vbo, GLuint ibo, GLsizei count) {
-#if !defined(IMGUI_IMPL_OPENGL_ES2) && !defined(__EMSCRIPTEN__)
-        glBindVertexArray(vao);
-#endif
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const void*)0);
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex),
-                              (const void*)(sizeof(float)*3));
-        glDrawElements(GL_TRIANGLES, count, GL_UNSIGNED_SHORT, 0);
-        glDisableVertexAttribArray(0);
-        glDisableVertexAttribArray(1);
-#if !defined(IMGUI_IMPL_OPENGL_ES2) && !defined(__EMSCRIPTEN__)
-        glBindVertexArray(0);
-#endif
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-    };
-
-    // --- Ground plane (draw first; depth test will handle occlusion) --------
-    if (scene.groundShader.ok && scene.groundShader.program != 0) {
-        glUseProgram(scene.groundShader.program);
-        scene.applyUniformsToGround(fbWidth_, fbHeight_);
-        drawMesh(groundVao_, groundVbo_, groundIbo_, groundIndexCount_);
-    }
-
-    // --- Cube ---------------------------------------------------------------
-    if (!scene.cubeShader.ok || scene.cubeShader.program == 0) {
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        return colorTex_;
-    }
-    glUseProgram(scene.cubeShader.program);
-    scene.applyUniformsToCube(fbWidth_, fbHeight_);
-    drawMesh(cubeVao_, cubeVbo_, cubeIbo_, cubeIndexCount_);
-
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE);
-    glUseProgram(0);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    return colorTex_;
-}
-
 // ---------------------------------------------------------------------------
-// ECS-driven render
+// Uniform helpers
 // ---------------------------------------------------------------------------
 static void pushUniformsEcs(GLuint p,
                              const glm::mat4& model,
@@ -211,8 +182,10 @@ static void pushUniformsEcs(GLuint p,
                              const glm::vec3& lightDir,
                              const glm::vec3& lightPos,
                              const glm::vec3& lightColor,
-                             bool  ambientOn,
-                             const glm::vec3& cameraPos) {
+                             float            lightType,   // 0=ambient,1=dir,2=spot
+                             float            spotCutoff,  // cos(half-angle)
+                             const glm::vec3& cameraPos)
+{
     auto setMat4  = [&](const char* n, const glm::mat4& m) {
         GLint l = glGetUniformLocation(p, n);
         if (l >= 0) glUniformMatrix4fv(l, 1, GL_FALSE, glm::value_ptr(m));
@@ -233,11 +206,14 @@ static void pushUniformsEcs(GLuint p,
     setVec3 ("uLightDir",      lightDir);
     setVec3 ("uLightPos",      lightPos);
     setVec3 ("uLightColor",    lightColor);
-    setFloat("uIsDirectional", 1.0f);  // always directional in ECS render
-    setFloat("uAmbientOn",     ambientOn ? 1.0f : 0.0f);
+    setFloat("uLightType",     lightType);
+    setFloat("uSpotCutoff",    spotCutoff);
     setVec3 ("uCameraPos",     cameraPos);
 }
 
+// ---------------------------------------------------------------------------
+// ECS render
+// ---------------------------------------------------------------------------
 GLuint Renderer::render(entt::registry& reg, const Scene& scene) {
     if (fbo_ == 0) return 0;
     glBindFramebuffer(GL_FRAMEBUFFER, fbo_);
@@ -251,7 +227,8 @@ GLuint Renderer::render(entt::registry& reg, const Scene& scene) {
     glCullFace(GL_BACK);
     glFrontFace(GL_CCW);
 
-    auto drawMesh = [&](GLuint vao, GLuint vbo, GLuint ibo, GLsizei count) {
+    // Helper: bind buffers, set attrib pointers, draw, clean up.
+    auto drawMeshBuffers = [&](GLuint vao, GLuint vbo, GLuint ibo, GLsizei count) {
 #if !defined(IMGUI_IMPL_OPENGL_ES2) && !defined(__EMSCRIPTEN__)
         glBindVertexArray(vao);
 #endif
@@ -261,7 +238,7 @@ GLuint Renderer::render(entt::registry& reg, const Scene& scene) {
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (const void*)0);
         glEnableVertexAttribArray(1);
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex),
-                              (const void*)(sizeof(float)*3));
+                              (const void*)(sizeof(float) * 3));
         glDrawElements(GL_TRIANGLES, count, GL_UNSIGNED_SHORT, 0);
         glDisableVertexAttribArray(0);
         glDisableVertexAttribArray(1);
@@ -272,7 +249,7 @@ GLuint Renderer::render(entt::registry& reg, const Scene& scene) {
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
     };
 
-    // 1. Gather camera matrices from ECS (fall back to scene camera if not ready)
+    // 1. Gather camera matrices from ECS (fallback to scene editor camera)
     glm::mat4 view {1.0f}, proj {1.0f};
     glm::vec3 camPos {0.0f, 5.0f, 15.0f};
     auto camView = reg.view<CameraState>();
@@ -286,18 +263,21 @@ GLuint Renderer::render(entt::registry& reg, const Scene& scene) {
         camPos = scene.camera.position;
     }
 
-    // 2. Gather light from ECS (fall back to scene light)
+    // 2. Gather light data from ECS
     glm::vec3 lightDir   {-0.4f, -0.8f, -0.4f};
     glm::vec3 lightPos   { 2.0f,  3.0f,  2.0f};
-    glm::vec3 lightColor {1.0f,   1.0f,  1.0f};
-    bool      ambientOn  = true;
+    glm::vec3 lightColor { 1.0f,  1.0f,  1.0f};
+    float     lightType  = 1.0f;   // directional by default
+    float     spotCutoff = std::cos(glm::radians(30.0f));
+
     auto lightView = reg.view<DirectionalLight>();
     if (!lightView.empty()) {
-        auto& dl = reg.get<DirectionalLight>(lightView.front());
+        auto& dl   = reg.get<DirectionalLight>(lightView.front());
         lightDir   = dl.direction;
         lightPos   = dl.position;
         lightColor = dl.color;
-        ambientOn  = dl.ambientOn;
+        lightType  = (float)dl.type;
+        spotCutoff = std::cos(glm::radians(dl.spotCutoff));
     }
 
     // 3. Draw all renderable ECS entities
@@ -309,18 +289,23 @@ GLuint Renderer::render(entt::registry& reg, const Scene& scene) {
         glm::mat4 model = tf.toMatrix();
 
         pushUniformsEcs(mat.program, model, view, proj,
-                        mat.color, lightDir, lightPos, lightColor, ambientOn, camPos);
+                        mat.color,
+                        lightDir, lightPos, lightColor,
+                        lightType, spotCutoff,
+                        camPos);
 
         switch (mr.meshId) {
             case MeshId::Ground:
-                drawMesh(groundVao_, groundVbo_, groundIbo_, groundIndexCount_);
+                drawMeshBuffers(groundVao_, groundVbo_, groundIbo_, groundIndexCount_);
+                break;
+            case MeshId::Sphere:
+                drawMeshBuffers(sphereVao_, sphereVbo_, sphereIbo_, sphereIndexCount_);
                 break;
             case MeshId::Cube:
             case MeshId::CarBody:
             case MeshId::CarWheel:
-            case MeshId::Sphere:
             default:
-                drawMesh(cubeVao_, cubeVbo_, cubeIbo_, cubeIndexCount_);
+                drawMeshBuffers(cubeVao_, cubeVbo_, cubeIbo_, cubeIndexCount_);
                 break;
         }
     });
@@ -332,18 +317,26 @@ GLuint Renderer::render(entt::registry& reg, const Scene& scene) {
     return colorTex_;
 }
 
+// ---------------------------------------------------------------------------
+// Cleanup
+// ---------------------------------------------------------------------------
 void Renderer::destroy() {
     destroyFbo();
+
     if (groundVbo_) { glDeleteBuffers(1, &groundVbo_); groundVbo_ = 0; }
     if (groundIbo_) { glDeleteBuffers(1, &groundIbo_); groundIbo_ = 0; }
     if (cubeVbo_)   { glDeleteBuffers(1, &cubeVbo_);   cubeVbo_   = 0; }
     if (cubeIbo_)   { glDeleteBuffers(1, &cubeIbo_);   cubeIbo_   = 0; }
+    if (sphereVbo_) { glDeleteBuffers(1, &sphereVbo_); sphereVbo_ = 0; }
+    if (sphereIbo_) { glDeleteBuffers(1, &sphereIbo_); sphereIbo_ = 0; }
+
 #if !defined(IMGUI_IMPL_OPENGL_ES2) && !defined(__EMSCRIPTEN__)
     if (groundVao_) { glDeleteVertexArrays(1, &groundVao_); groundVao_ = 0; }
     if (cubeVao_)   { glDeleteVertexArrays(1, &cubeVao_);   cubeVao_   = 0; }
+    if (sphereVao_) { glDeleteVertexArrays(1, &sphereVao_); sphereVao_ = 0; }
 #endif
 }
 
 Renderer::~Renderer() {
-    destroy(); // no-op if already called explicitly before context deletion
+    destroy();
 }
