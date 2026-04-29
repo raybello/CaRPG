@@ -15,6 +15,7 @@ typedef unsigned int GLuint;
 struct PlayerTag   {};
 struct NpcTag      {};
 struct ItemWorldTag{};  // item lying in the world waiting to be picked up
+struct CameraTag   {};  // marks the scene/editor camera entity
 
 // ---------------------------------------------------------------------------
 // Item IDs — must match LOOT.json "id" strings
@@ -70,7 +71,12 @@ struct Transform {
 // ---------------------------------------------------------------------------
 struct Velocity {
     glm::vec3 linear   {0.0f, 0.0f, 0.0f};
-    float     angularY = 0.0f;  // deg/s yaw
+    float     angularY = 0.0f;  // deg/s yaw (display only)
+
+    // Smoothed input state — owned/written by PhysicsSystem.
+    // Lives here so multiple cars work later without a system-side singleton.
+    float appliedThrottle = 0.0f;  // [-1, +1]
+    float appliedSteer    = 0.0f;  // [-1, +1]
 };
 
 struct CarInput {
@@ -194,9 +200,13 @@ struct CameraState {
 // ---------------------------------------------------------------------------
 // Light
 // ---------------------------------------------------------------------------
+enum class LightType { Ambient = 0, Directional = 1, Spot = 2 };
+
 struct DirectionalLight {
     glm::vec3 direction  {-0.4f, -0.8f, -0.4f};
     glm::vec3 color      {1.0f,  1.0f,  1.0f};
     glm::vec3 position   {2.0f,  3.0f,  2.0f};
     bool      ambientOn  = true;
+    LightType type       = LightType::Directional;
+    float     spotCutoff = 30.0f;  // half-angle in degrees for spot lights
 };

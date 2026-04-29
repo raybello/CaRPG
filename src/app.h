@@ -3,7 +3,6 @@
 
 #include <string>
 
-// Forward declarations to keep this header light
 struct SDL_Window;
 typedef void* SDL_GLContext;
 
@@ -25,16 +24,12 @@ public:
     App();
     ~App();
 
-    bool initWindow();   // creates SDL window + GL context
-    bool initImGui();    // initializes ImGui + backends
-    bool initScene();    // creates default shaders, FBO, cube mesh + ECS world
+    bool initWindow();
+    bool initImGui();
+    bool initScene();
 
-    // One frame.  Returns false when the user closes the window.
     bool frame();
-
-    // Run the main loop (delegates to emscripten's loop on web).
     void run();
-
     void shutdown();
 
 private:
@@ -46,22 +41,28 @@ private:
     int           winH_    = 720;
     bool          running_ = true;
 
-    // Scene & rendering (preserved for shader hot-reload)
+    // Scene & rendering
     Scene    scene_;
     Renderer renderer_;
 
-    // Panel state (shader editor — preserved unchanged)
-    bool     showPanel_         = true;
-    bool     showShaderPopup_   = false;
-    SceneItem selectedItem_     = SceneItem::Cube;
+    // Panel UI state
+    bool      showPanel_       = true;
+    bool      showShaderPopup_ = false;
+
+    // Entity selected in the inspector panel (entt::null = none)
+    entt::entity selectedEntity_ = entt::null;
+
+    // Shader editor — which slot is being edited
+    ShaderSlot  editorTargetSlot_ = ShaderSlot::Object;
     std::string editorVertBuf_;
     std::string editorFragBuf_;
-    SceneItem  editorTargetItem_ = SceneItem::Cube;
 
     // ECS core
     entt::registry   registry_;
     entt::dispatcher dispatcher_;
-    entt::entity     playerEntity_ = entt::null;
+    entt::entity     playerEntity_   = entt::null;
+    entt::entity     lightEntity_    = entt::null;
+    entt::entity     cameraEcsEntity_= entt::null;
 
     // Systems
     InputSystem    inputSys_;
@@ -77,16 +78,18 @@ private:
     InventoryPanel inventoryPanel_;
     bool           gameRunning_ = true;
 
-    // Viewport size last seen (for HUD positioning)
+    // Viewport size
     int vpW_ = 800;
     int vpH_ = 600;
 
-    // Shader editor helpers (unchanged)
+    // Panel helpers
     void drawPanel();
     void drawShaderPopup();
-    void openShaderEditorFor(SceneItem item);
+
+    // Return the shader slot for a given entity
+    ShaderSlot slotForEntity(entt::entity e) const;
+    void openShaderEditorFor(ShaderSlot slot);
     void recompileEdited();
-    void uniformsForSelected();
 
     // ECS helpers
     bool initGame();
@@ -95,10 +98,10 @@ private:
     void tickSystems(float dt);
     void drawGameUI();
     void syncShaderProgramsToRegistry();
-
-    // Spawn a world item at a position
     void spawnWorldItem(ItemId id, const glm::vec3& pos);
 
-    // Static dispatcher for emscripten_set_main_loop_arg
+    // Entity display name (for the panel list)
+    std::string entityDisplayName(entt::entity e) const;
+
     static void mainLoopThunk(void* userdata);
 };
