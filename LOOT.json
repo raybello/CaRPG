@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "id": "NitroBoost",
+      "name": "Nitro Canister",
+      "description": "A burst of chemical acceleration. Temporary speed surge.",
+      "type": "powerup",
+      "maxStack": 3,
+      "meshId": "Sphere",
+      "color": [0.2, 0.8, 1.0],
+      "effects": { "duration": 8.0, "dPower": 60.0, "dTopSpeed": 10.0, "shieldAmount": 0.0 }
+    },
+    {
+      "id": "MagneticShield",
+      "name": "Magnetic Shield",
+      "description": "An EM barrier that absorbs terrain hazard drain for a short time.",
+      "type": "powerup",
+      "maxStack": 2,
+      "meshId": "Sphere",
+      "color": [0.4, 1.0, 0.4],
+      "effects": { "duration": 15.0, "dPower": 0.0, "dTopSpeed": 0.0, "shieldAmount": 1.0 }
+    },
+    {
+      "id": "EnginePart",
+      "name": "Engine Part",
+      "description": "Salvaged mechanical components. Combine 3 to upgrade your engine tier.",
+      "type": "crafting",
+      "maxStack": 10,
+      "meshId": "Cube",
+      "color": [0.6, 0.4, 0.2],
+      "effects": { "upgradeTarget": "engine", "quantityRequired": 3, "dPower": 15.0, "dEfficiency": 0.2 }
+    },
+    {
+      "id": "SteelCoil",
+      "name": "Steel Coil",
+      "description": "Heavy-duty coil spring. Combine 2 to upgrade your suspension tier.",
+      "type": "crafting",
+      "maxStack": 10,
+      "meshId": "Cube",
+      "color": [0.7, 0.7, 0.8],
+      "effects": { "upgradeTarget": "suspension", "quantityRequired": 2, "dHandling": 0.3 }
+    },
+    {
+      "id": "TurboWheels",
+      "name": "Turbo Wheels (Tier 2)",
+      "description": "Precision-engineered racing wheels. Improves speed and handling.",
+      "type": "gear",
+      "maxStack": 1,
+      "meshId": "Cube",
+      "color": [1.0, 0.8, 0.0],
+      "effects": { "slot": "wheels", "dHandling": 0.3, "dPower": 0.0, "dEfficiency": 0.0, "dTopSpeed": 5.0, "tier": 2 }
+    },
+    {
+      "id": "OffRoadSuspension",
+      "name": "Off-Road Suspension",
+      "description": "Heavy-duty off-road kit. More grip, slightly more fuel cost.",
+      "type": "gear",
+      "maxStack": 1,
+      "meshId": "Cube",
+      "color": [0.5, 0.35, 0.1],
+      "effects": { "slot": "suspension", "dHandling": 0.5, "dPower": 0.0, "dEfficiency": -0.1, "dTopSpeed": 0.0, "tier": 2 }
+    },
+    {
+      "id": "FuelCanister",
+      "name": "Fuel Canister",
+      "description": "A standard fuel reserve. Instantly restores 50 fuel.",
+      "type": "consumable",
+      "maxStack": 5,
+      "meshId": "Cube",
+      "color": [1.0, 0.3, 0.1],
+      "effects": { "fuelRestore": 50.0 }
+    },
+    {
+      "id": "OverchargeCell",
+      "name": "Overcharge Cell",
+      "description": "Overclock your engine for 3 seconds. Extreme power burst.",
+      "type": "consumable",
+      "maxStack": 3,
+      "meshId": "Sphere",
+      "color": [1.0, 1.0, 0.2],
+      "effects": { "duration": 3.0, "dPower": 80.0, "dTopSpeed": 0.0 }
+    },
+    {
+      "id": "RoadSignFragment",
+      "name": "Ancient Road Sign",
+      "description": "A shard of a pre-collapse road marker. Collect 10 to reveal a hidden zone.",
+      "type": "lore",
+      "maxStack": 99,
+      "meshId": "Cube",
+      "color": [0.9, 0.9, 0.6],
+      "effects": { "collectTarget": 10, "reward": "unlockZone" }
+    },
+    {
+      "id": "AbandonedWreck",
+      "name": "Abandoned Wreck",
+      "description": "A rusted-out car shell. Strip it for parts.",
+      "type": "salvage",
+      "maxStack": 1,
+      "meshId": "Cube",
+      "color": [0.4, 0.4, 0.4],
+      "effects": {
+        "yields": [
+          { "id": "EnginePart", "qty": 2 },
+          { "id": "SteelCoil",  "qty": 1 }
+        ]
+      }
+    }
+  ]
+}
