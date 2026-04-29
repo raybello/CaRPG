@@ -1,28 +1,86 @@
-# Web3D — tiny shader playground
+# rve — 3D Car RPG
 
-A minimal C++/OpenGL + ImGui scene viewer. A single cube is rendered to an
-off-screen framebuffer that's shown inside an ImGui window. A side panel
-(toggle with **`p`**) lets you select Cube / Camera / Light, tweak their
-uniforms, and pop open a shader editor that **recompiles live** when you
-hit *Save & Recompile*.
-
-The project builds for **native** desktop and **web** (Emscripten / WebGL)
-from one Makefile.
+A 3D driving RPG built in C++20 with OpenGL, SDL2, Dear ImGui, and the
+[EnTT](https://github.com/skypjack/entt) entity-component system. The player
+drives a car through a world, collecting loot, managing fuel, equipping gear,
+and using powerups — all rendered to an offscreen framebuffer displayed inside
+an ImGui viewport. Builds for **native** desktop and **web** (Emscripten /
+WebGL) from one Makefile.
 
 ## Layout
 
 ```
 .
-├── Makefile        # native + emscripten in one file
-├── src/            # all the application code
+├── Makefile
+├── LOOT.json               # item definitions (loaded at runtime)
+├── src/
 │   ├── main.cpp
-│   ├── app.{h,cpp}     # SDL2 + ImGui bootstrap, panel UI, shader editor
-│   ├── scene.{h,cpp}   # Cube / Camera / Light + per-item shaders & uniforms
-│   ├── renderer.{h,cpp}# off-screen FBO + cube draw call
-│   ├── shader.{h,cpp}  # compile / link helper
-│   └── math.h          # tiny vec3 / mat4 / perspective / lookAt
-└── lib/imgui/      # vendored Dear ImGui (sdl2 + opengl3 backends)
+│   ├── app.{h,cpp}         # SDL2 + ImGui bootstrap
+│   ├── scene.{h,cpp}       # world setup, entity spawning
+│   ├── renderer.{h,cpp}    # offscreen FBO, mesh upload, draw calls
+│   ├── shader.{h,cpp}      # GLSL compile/link helpers
+│   ├── glm_math.h
+│   ├── ecs/
+│   │   ├── components.h    # all ECS component types
+│   │   └── world.h
+│   ├── game/
+│   │   ├── item_catalog.{h,cpp}   # parses LOOT.json into ItemDef structs
+│   │   └── game_events.h
+│   ├── systems/
+│   │   ├── input_system.{h,cpp}
+│   │   ├── physics_system.{h,cpp}
+│   │   ├── fuel_system.{h,cpp}
+│   │   ├── stat_system.{h,cpp}
+│   │   ├── item_system.{h,cpp}
+│   │   ├── camera_system.{h,cpp}
+│   │   └── render_system.{h,cpp}
+│   └── ui/
+│       ├── hud.{h,cpp}             # fuel bar, speed, active powerup timers
+│       └── inventory_panel.{h,cpp} # 20-slot grid, equip / use / salvage
+└── lib/
+    ├── entt/       # EnTT ECS (header-only)
+    ├── imgui/      # Dear ImGui + SDL2/OpenGL3 backends
+    ├── json/       # nlohmann/json (header-only)
+    └── glm/        # OpenGL Mathematics
 ```
+
+## Architecture
+
+The game is structured around an ECS world (EnTT). Each frame the systems run
+in order:
+
+| System | Responsibility |
+|---|---|
+| `InputSystem` | Maps keyboard state → `CarInput` throttle/brake/steer/handbrake |
+| `PhysicsSystem` | Integrates `CarInput` + `DerivedCarStats` → `Velocity` / `Transform` |
+| `FuelSystem` | Drains `Fuel` based on throttle and efficiency; applies hazard drain when shieldless |
+| `StatSystem` | Recalculates `DerivedCarStats` from base + equipped gear + active powerups (dirty flag) |
+| `ItemSystem` | Handles world pickup, inventory add, consume, salvage, crafting combine |
+| `CameraSystem` | Smoothly follows the player entity via `CameraFollow` lag parameter |
+| `RenderSystem` | Draws all `MeshRef` + `Material` entities; uploads view/proj from `CameraState` |
+
+**Components** (`src/ecs/components.h`): `Transform`, `Velocity`, `CarInput`,
+`BaseCarStats`, `DerivedCarStats`, `Fuel`, `Inventory`, `GearComponent`,
+`ActivePowerup`, `CameraFollow`, `CameraState`, `DirectionalLight`, `MeshRef`,
+`Material`, plus tag types `PlayerTag` / `NpcTag` / `ItemWorldTag`.
+
+## Item system
+
+Items are defined in [`LOOT.json`](LOOT.json) and loaded into an `ItemCatalog`
+at startup. The inventory holds 20 slots; items stack up to their `maxStack`.
+
+| Category | Item | Effect |
+|---|---|---|
+| Powerup | Nitro Canister | +60 power, +10 top speed for 8 s |
+| Powerup | Magnetic Shield | Blocks hazard fuel drain for 15 s |
+| Crafting | Engine Part | 3× combine → engine upgrade (+15 power, +0.2 efficiency) |
+| Crafting | Steel Coil | 2× combine → suspension upgrade (+0.3 handling) |
+| Gear | Turbo Wheels (Tier 2) | +0.3 handling, +5 top speed (wheels slot) |
+| Gear | Off-Road Suspension | +0.5 handling, −0.1 efficiency (suspension slot) |
+| Consumable | Fuel Canister | Instantly restores 50 fuel |
+| Consumable | Overcharge Cell | +80 power burst for 3 s |
+| Lore | Ancient Road Sign | Collect 10 → unlock hidden zone |
+| Salvage | Abandoned Wreck | Strip for 2 Engine Parts + 1 Steel Coil |
 
 ## Build & run
 
@@ -33,8 +91,8 @@ make            # → build/web3d
 make run        # build & launch
 ```
 
-Requires a working SDL2 (`brew install sdl2` on macOS,
-`apt install libsdl2-dev` on Debian/Ubuntu) and a C++17 compiler.
+Requires SDL2 (`brew install sdl2` on macOS, `apt install libsdl2-dev` on
+Debian/Ubuntu) and a C++20-capable compiler.
 
 ### Web (Emscripten)
 
@@ -44,25 +102,15 @@ make web                      # → web/index.{html,js,wasm}
 make serve                    # build + serve at http://localhost:8000
 ```
 
-If `em++` isn't available the build will fall back to telling you so.
-
 ## Controls
 
-* **`p`** — show / hide the inspector panel
-* Drag the panel + viewport windows to rearrange
-* Inspector → *Edit Shader Source...* opens a popup with the vertex +
-  fragment GLSL for the selected scene item; *Save & Recompile* builds
-  the new program and the viewport updates immediately on success or
-  shows the compiler error otherwise.
+* **WASD / arrow keys** — throttle, brake, steer
+* **`p`** — show / hide the ImGui inspector panel
+* HUD shows fuel bar, current speed, and active powerup timers
 
-## Notes
+## Shader notes
 
-* Shaders are written in GLSL ES 100 when targeting the web (WebGL 1) and
-  GLSL 130 (`#version 130`) on desktop. Default sources are built for
-  whichever target is active so a fresh build "just works".
-* The cube uses a Blinn-Phong-ish shading model that consumes
-  `uMaterialColor`, `uLightColor`, `uLightDir`, `uLightPos`,
-  `uIsDirectional`, `uAmbientOn`, `uCameraPos`, `uModel`, `uView`,
-  `uProj`. You can rip these out in the shader editor and replace with
-  whatever you want — uniforms that the new program does not declare are
-  silently ignored.
+Shaders are written in GLSL ES 100 when targeting WebGL and GLSL 130
+(`#version 130`) on desktop. Default sources are selected at build time so a
+fresh build just works. The inspector panel's *Edit Shader Source...* popup
+lets you edit and live-recompile shaders for any scene entity.

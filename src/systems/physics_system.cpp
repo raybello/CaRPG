@@ -17,7 +17,7 @@ void PhysicsSystem::update(entt::registry& reg, float dt) {
 
         // Steering: D = right (+steer) should yaw right (negative Y angle in OpenGL)
         // Use sqrt of speed fraction so steering is strong at low speed too
-        float speedFraction = stats.topSpeed > 0.0f ? std::abs(speed) / stats.topSpeed : 0.0f;
+        float speedFraction = stats.topSpeed > 0.0f ? std::max(0.0f, speed) / stats.topSpeed : 0.0f;
         float steerCurve    = std::sqrt(speedFraction + 0.15f);  // non-zero at rest
         float yawDelta = -input.steer * stats.handling * steerSensitivity * steerCurve * dt;
 
