@@ -70,11 +70,11 @@ void PhysicsSystem::update(entt::registry& reg, float dt) {
         vel.appliedThrottle = std::clamp(safeF(vel.appliedThrottle), -1.0f, 1.0f);
         vel.appliedSteer    = std::clamp(safeF(vel.appliedSteer),    -1.0f, 1.0f);
 
-        // Steering: D = right (+steer) should yaw right (negative Y angle in OpenGL)
-        // Use sqrt of speed fraction so steering is strong at low speed too
-        float speedFraction = stats.topSpeed > 0.0f ? std::max(0.0f, speed) / stats.topSpeed : 0.0f;
-        float steerCurve    = std::sqrt(speedFraction + 0.15f);  // non-zero at rest
-        float yawDelta = -input.steer * stats.handling * steerSensitivity * steerCurve * dt;
+        // ---- 3) Sanitize inputs ----------------------------------------
+        float tgtThrottle = std::clamp(safeF(rawInput.throttle), -1.0f, 1.0f);
+        float tgtSteer    = std::clamp(safeF(rawInput.steer),    -1.0f, 1.0f);
+        float tgtBrake    = std::clamp(safeF(rawInput.brake),     0.0f, 1.0f);
+        if (fuel.depleted()) tgtThrottle = 0.0f;
 
         // ---- 4) Smooth applied inputs ----------------------------------
         float kT = std::clamp(throttleResponse * dt, 0.0f, 1.0f);
