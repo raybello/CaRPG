@@ -17,6 +17,7 @@
 #endif
 
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "imgui_impl_sdl2.h"
 #include "imgui_impl_opengl3.h"
 #include "ImGuizmo.h"
@@ -598,6 +599,10 @@ void App::drawGizmo() {
 
     ImGuizmo::SetRect(0.0f, 0.0f, (float)vpW_, (float)vpH_);
 
+    std::fprintf(stderr, "GIZMO: sel=%u pos=(%.1f,%.1f,%.1f) vp=%d,%d rect=(0,0,%.0f,%.0f)\n",
+                 (unsigned)selectedEntity_, tf->position.x, tf->position.y, tf->position.z,
+                 vpW_, vpH_, (float)vpW_, (float)vpH_);
+
     float snap[3] = {0.0f, 0.0f, 0.0f};
     if (useGizmoSnap_) {
         switch (gizmoOperation_) {
@@ -608,8 +613,9 @@ void App::drawGizmo() {
         }
     }
 
-    if (ImGuizmo::Manipulate(viewMat, projMat, gizmoOperation_, gizmoMode_,
-                             matrix, nullptr, useGizmoSnap_ ? snap : nullptr)) {
+    bool used = ImGuizmo::Manipulate(viewMat, projMat, gizmoOperation_, gizmoMode_,
+                                     matrix, nullptr, useGizmoSnap_ ? snap : nullptr);
+    if (used) {
         glm::mat4 result = glm::transpose(glm::make_mat4(matrix));
         tf->position = glm::vec3(result[3]);
         tf->scale    = glm::vec3(glm::length(glm::vec3(result[0])),
@@ -700,6 +706,7 @@ bool App::frame() {
         ImGui::Image((ImTextureID)(intptr_t)tex,
                      ImVec2((float)vpW_, (float)vpH_),
                      ImVec2(0, 1), ImVec2(1, 0));
+        ImGuizmo::SetAlternativeWindow(ImGui::GetCurrentContext() ? ImGui::FindWindowByName("Viewport##bg") : nullptr);
         ImGui::End();
     }
 

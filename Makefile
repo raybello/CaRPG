@@ -112,7 +112,7 @@ web: $(WEB_OUT)
 run: native
 	./$(NATIVE_BIN)
 
-rerun: clean-native native run
+rerun: clean-native run
 
 serve: web
 	@echo "Serving $(WEB_DIR) at http://localhost:8000"
