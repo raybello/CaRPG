@@ -19,6 +19,7 @@ APP        := web3d
 SRC_DIR    := src
 IMGUI_DIR  := lib/imgui
 BACKEND_DIR:= $(IMGUI_DIR)/backends
+IMGUIZMO_DIR:= lib/imguizmo
 
 # Source files (project + imgui)
 APP_SRCS := \
@@ -45,14 +46,15 @@ IMGUI_SRCS := \
     $(IMGUI_DIR)/imgui_tables.cpp \
     $(IMGUI_DIR)/imgui_widgets.cpp \
     $(BACKEND_DIR)/imgui_impl_sdl2.cpp \
-    $(BACKEND_DIR)/imgui_impl_opengl3.cpp
+    $(BACKEND_DIR)/imgui_impl_opengl3.cpp \
+    $(IMGUIZMO_DIR)/ImGuizmo.cpp
 
 ALL_SRCS := $(APP_SRCS) $(IMGUI_SRCS)
 
 GLM_DIR    := lib/glm
 ENTT_DIR   := lib/entt/single_include
 JSON_DIR   := lib/json/single_include
-INCLUDES := -I$(SRC_DIR) -I$(IMGUI_DIR) -I$(BACKEND_DIR) -I$(GLM_DIR) -I$(ENTT_DIR) -I$(JSON_DIR)
+INCLUDES := -I$(SRC_DIR) -I$(IMGUI_DIR) -I$(BACKEND_DIR) -I$(IMGUIZMO_DIR) -I$(GLM_DIR) -I$(ENTT_DIR) -I$(JSON_DIR)
 
 # Shared compile flags (added to whichever toolchain is used)
 COMMON_CXXFLAGS := -std=c++20 -Wall -Wformat -Wno-unused-function $(INCLUDES)

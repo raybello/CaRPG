@@ -19,6 +19,7 @@
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
 #include "imgui_impl_opengl3.h"
+#include "ImGuizmo.h"
 
 // ---------------------------------------------------------------------------
 // Construction / destruction
@@ -405,6 +406,27 @@ void App::drawPanel() {
             if (auto* tf = registry_.try_get<Transform>(selectedEntity_)) {
                 ImGui::TextDisabled("Transform");
 
+                // Gizmo operation selector
+                if (ImGui::RadioButton("Translate", gizmoOperation_ == ImGuizmo::TRANSLATE))
+                    gizmoOperation_ = ImGuizmo::TRANSLATE;
+                ImGui::SameLine();
+                if (ImGui::RadioButton("Rotate",    gizmoOperation_ == ImGuizmo::ROTATE))
+                    gizmoOperation_ = ImGuizmo::ROTATE;
+                ImGui::SameLine();
+                if (ImGui::RadioButton("Scale",     gizmoOperation_ == ImGuizmo::SCALE))
+                    gizmoOperation_ = ImGuizmo::SCALE;
+
+                if (gizmoOperation_ != ImGuizmo::SCALE) {
+                    ImGui::SameLine();
+                    if (ImGui::RadioButton("Local", gizmoMode_ == ImGuizmo::LOCAL))
+                        gizmoMode_ = ImGuizmo::LOCAL;
+                    ImGui::SameLine();
+                    if (ImGui::RadioButton("World", gizmoMode_ == ImGuizmo::WORLD))
+                        gizmoMode_ = ImGuizmo::WORLD;
+                }
+
+                ImGui::Checkbox("Snap", &useGizmoSnap_);
+
                 ImGui::SliderFloat3("Position", &tf->position.x, -50.0f, 50.0f);
 
                 // Convert quaternion → Euler for display, then write back
@@ -555,6 +577,52 @@ void App::drawShaderPopup() {
 }
 
 // ---------------------------------------------------------------------------
+// UI: ImGuizmo for selected entity transform
+// ---------------------------------------------------------------------------
+void App::drawGizmo() {
+    if (!registry_.valid(selectedEntity_)) return;
+    auto* tf = registry_.try_get<Transform>(selectedEntity_);
+    if (!tf) return;
+
+    auto* cam = registry_.try_get<CameraState>(cameraEcsEntity_);
+    if (!cam) return;
+
+    float viewMat[16];
+    float projMat[16];
+    std::memcpy(viewMat, glm::value_ptr(cam->view), sizeof(viewMat));
+    std::memcpy(projMat, glm::value_ptr(cam->proj), sizeof(projMat));
+
+    glm::mat4 model = tf->toMatrix();
+    float matrix[16];
+    std::memcpy(matrix, glm::value_ptr(glm::transpose(model)), sizeof(matrix));
+
+    ImGuizmo::SetRect(0.0f, 0.0f, (float)vpW_, (float)vpH_);
+
+    float snap[3] = {0.0f, 0.0f, 0.0f};
+    if (useGizmoSnap_) {
+        switch (gizmoOperation_) {
+            case ImGuizmo::TRANSLATE: snap[0] = snap[1] = snap[2] = 0.5f; break;
+            case ImGuizmo::ROTATE:    snap[0] = 15.0f; break;
+            case ImGuizmo::SCALE:     snap[0] = 0.25f; break;
+            default: break;
+        }
+    }
+
+    if (ImGuizmo::Manipulate(viewMat, projMat, gizmoOperation_, gizmoMode_,
+                             matrix, nullptr, useGizmoSnap_ ? snap : nullptr)) {
+        glm::mat4 result = glm::transpose(glm::make_mat4(matrix));
+        tf->position = glm::vec3(result[3]);
+        tf->scale    = glm::vec3(glm::length(glm::vec3(result[0])),
+                                 glm::length(glm::vec3(result[1])),
+                                 glm::length(glm::vec3(result[2])));
+        glm::mat3 rotMat(result[0][0], result[1][0], result[2][0],
+                         result[0][1], result[1][1], result[2][1],
+                         result[0][2], result[1][2], result[2][2]);
+        tf->rotation = glm::quat_cast(rotMat);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main frame
 // ---------------------------------------------------------------------------
 bool App::frame() {
@@ -579,11 +647,19 @@ bool App::frame() {
                 showPanel_ = !showPanel_;
             if (e.key.keysym.sym == SDLK_i)
                 inventoryPanel_.visible = !inventoryPanel_.visible;
+            if (e.key.keysym.sym == SDLK_t)
+                gizmoOperation_ = ImGuizmo::TRANSLATE;
+            if (e.key.keysym.sym == SDLK_e)
+                gizmoOperation_ = ImGuizmo::ROTATE;
+            if (e.key.keysym.sym == SDLK_r)
+                gizmoOperation_ = ImGuizmo::SCALE;
+            if (e.key.keysym.sym == SDLK_s)
+                useGizmoSnap_ = !useGizmoSnap_;
         }
     }
 
     // --- Tick game ---
-    if (gameRunning_) tickSystems(dt);
+    if (gameRunning_ && !ImGuizmo::IsUsing()) tickSystems(dt);
 
     // --- Sync light sphere color from its DirectionalLight component ---
     if (registry_.valid(lightEntity_)) {
@@ -596,6 +672,7 @@ bool App::frame() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
+    ImGuizmo::BeginFrame();
 
     // Fullscreen background viewport
     {
@@ -627,6 +704,7 @@ bool App::frame() {
     }
 
     drawPanel();
+    drawGizmo();
     drawShaderPopup();
     drawGameUI();
 

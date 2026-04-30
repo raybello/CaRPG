@@ -18,6 +18,8 @@ typedef void* SDL_GLContext;
 #include "systems/render_system.h"
 #include "ui/hud.h"
 #include "ui/inventory_panel.h"
+#include "imgui.h"
+#include "ImGuizmo.h"
 
 class App {
 public:
@@ -48,6 +50,10 @@ private:
     // Panel UI state
     bool      showPanel_       = true;
     bool      showShaderPopup_ = false;
+
+    ImGuizmo::OPERATION gizmoOperation_ = ImGuizmo::TRANSLATE;
+    ImGuizmo::MODE      gizmoMode_      = ImGuizmo::WORLD;
+    bool                useGizmoSnap_   = false;
 
     // Entity selected in the inspector panel (entt::null = none)
     entt::entity selectedEntity_ = entt::null;
@@ -84,6 +90,7 @@ private:
 
     // Panel helpers
     void drawPanel();
+    void drawGizmo();
     void drawShaderPopup();
 
     // Return the shader slot for a given entity
