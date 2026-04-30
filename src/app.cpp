@@ -434,6 +434,38 @@ void App::drawPanel() {
 
     ImGui::Separator();
 
+    // ---- Physics system settings ----------------------------------------
+    if (ImGui::CollapsingHeader("Physics", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextDisabled("Throttle / Power");
+        ImGui::SliderFloat("Power Scale",       &physicsSys_.powerScale,       0.01f, 2.0f);
+        ImGui::SliderFloat("Throttle Response", &physicsSys_.throttleResponse, 0.1f,  10.0f);
+        ImGui::SliderFloat("Max Accel",         &physicsSys_.maxAccel,         1.0f,  200.0f);
+
+        ImGui::Separator();
+        ImGui::TextDisabled("Brake / Reverse");
+        ImGui::SliderFloat("Brake Sensitivity", &physicsSys_.brakeSensitivity, 10.0f,  500.0f);
+        ImGui::SliderFloat("Reverse Power Mul", &physicsSys_.reversePowerMul,  0.1f,   2.0f);
+        ImGui::SliderFloat("Reverse Speed Mul", &physicsSys_.reverseSpeedMul,  0.1f,   2.0f);
+        ImGui::SliderFloat("Engine Brake",      &physicsSys_.engineBrake,      0.0f,   10.0f);
+
+        ImGui::Separator();
+        ImGui::TextDisabled("Friction");
+        ImGui::SliderFloat("Drag",              &physicsSys_.drag,             0.0f,  10.0f);
+        ImGui::SliderFloat("Lateral Friction",  &physicsSys_.lateralFriction,  0.1f,  50.0f);
+        ImGui::SliderFloat("Handbrake Grip Mul",&physicsSys_.handbrakeGripMul, 0.01f,  1.0f);
+        ImGui::SliderFloat("Handbrake Drag",    &physicsSys_.handbrakeDrag,    0.0f,  20.0f);
+
+        ImGui::Separator();
+        ImGui::TextDisabled("Steering");
+        ImGui::SliderFloat("Steer Response",    &physicsSys_.steerResponse,    0.1f,  20.0f);
+        ImGui::SliderFloat("Max Steer (deg)",   &physicsSys_.maxSteerAngleRad, 0.05f,  1.5f);
+        ImGui::SliderFloat("Wheelbase",         &physicsSys_.wheelbase,        0.5f,  10.0f);
+        ImGui::SliderFloat("Pivot Min Speed",   &physicsSys_.pivotMinSpeed,    0.1f,  10.0f);
+        ImGui::SliderFloat("Pivot Yaw Rate",    &physicsSys_.pivotYawRate,     0.1f,   5.0f);
+    }
+
+    ImGui::Separator();
+
     // ---- Shader editor entry -------------------------------------------
     if (ImGui::CollapsingHeader("Shader", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (registry_.valid(selectedEntity_)) {
