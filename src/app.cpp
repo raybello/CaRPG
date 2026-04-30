@@ -588,20 +588,15 @@ void App::drawGizmo() {
     auto* cam = registry_.try_get<CameraState>(cameraEcsEntity_);
     if (!cam) return;
 
-    float viewMat[16];
-    float projMat[16];
-    std::memcpy(viewMat, glm::value_ptr(cam->view), sizeof(viewMat));
-    std::memcpy(projMat, glm::value_ptr(cam->proj), sizeof(projMat));
-
+    // GLM and ImGuizmo both use column-major matrix layout, so we can pass
+    // glm matrices directly via value_ptr — no transpose needed.
     glm::mat4 model = tf->toMatrix();
     float matrix[16];
-    std::memcpy(matrix, glm::value_ptr(glm::transpose(model)), sizeof(matrix));
+    std::memcpy(matrix, glm::value_ptr(model), sizeof(matrix));
 
-    ImGuizmo::SetRect(0.0f, 0.0f, (float)vpW_, (float)vpH_);
-
-    std::fprintf(stderr, "GIZMO: sel=%u pos=(%.1f,%.1f,%.1f) vp=%d,%d rect=(0,0,%.0f,%.0f)\n",
-                 (unsigned)selectedEntity_, tf->position.x, tf->position.y, tf->position.z,
-                 vpW_, vpH_, (float)vpW_, (float)vpH_);
+    // Anchor the gizmo overlay to the actual rendered image rectangle so it
+    // sits on top of the visible viewport regardless of where ImGui placed it.
+    ImGuizmo::SetRect(vpScreenX_, vpScreenY_, (float)vpW_, (float)vpH_);
 
     float snap[3] = {0.0f, 0.0f, 0.0f};
     if (useGizmoSnap_) {
@@ -613,18 +608,19 @@ void App::drawGizmo() {
         }
     }
 
-    bool used = ImGuizmo::Manipulate(viewMat, projMat, gizmoOperation_, gizmoMode_,
-                                     matrix, nullptr, useGizmoSnap_ ? snap : nullptr);
+    bool used = ImGuizmo::Manipulate(glm::value_ptr(cam->view),
+                                     glm::value_ptr(cam->proj),
+                                     gizmoOperation_, gizmoMode_,
+                                     matrix, nullptr,
+                                     useGizmoSnap_ ? snap : nullptr);
     if (used) {
-        glm::mat4 result = glm::transpose(glm::make_mat4(matrix));
-        tf->position = glm::vec3(result[3]);
-        tf->scale    = glm::vec3(glm::length(glm::vec3(result[0])),
-                                 glm::length(glm::vec3(result[1])),
-                                 glm::length(glm::vec3(result[2])));
-        glm::mat3 rotMat(result[0][0], result[1][0], result[2][0],
-                         result[0][1], result[1][1], result[2][1],
-                         result[0][2], result[1][2], result[2][2]);
-        tf->rotation = glm::quat_cast(rotMat);
+        // Decompose the manipulated matrix back into T/R/S. ImGuizmo's helper
+        // returns Euler angles in degrees, which we convert back to a quat.
+        float t[3], r[3], s[3];
+        ImGuizmo::DecomposeMatrixToComponents(matrix, t, r, s);
+        tf->position = glm::vec3(t[0], t[1], t[2]);
+        tf->rotation = glm::quat(glm::radians(glm::vec3(r[0], r[1], r[2])));
+        tf->scale    = glm::vec3(s[0], s[1], s[2]);
     }
 }
 
@@ -703,6 +699,11 @@ bool App::frame() {
         renderer_.resize(vpW_, vpH_);
 
         GLuint tex = renderSys_.render(registry_, renderer_, scene_);
+        // Capture the image's screen-space position so the gizmo overlay
+        // can be placed exactly on top of the rendered viewport.
+        ImVec2 imgPos = ImGui::GetCursorScreenPos();
+        vpScreenX_ = imgPos.x;
+        vpScreenY_ = imgPos.y;
         ImGui::Image((ImTextureID)(intptr_t)tex,
                      ImVec2((float)vpW_, (float)vpH_),
                      ImVec2(0, 1), ImVec2(1, 0));

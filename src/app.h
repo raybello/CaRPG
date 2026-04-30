@@ -88,6 +88,11 @@ private:
     int vpW_ = 800;
     int vpH_ = 600;
 
+    // Screen-space rect of the rendered viewport image (used to position
+    // the gizmo overlay so it tracks the visible image, not the window).
+    float vpScreenX_ = 0.0f;
+    float vpScreenY_ = 0.0f;
+
     // Panel helpers
     void drawPanel();
     void drawGizmo();
