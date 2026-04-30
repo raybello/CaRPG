@@ -110,6 +110,8 @@ web: $(WEB_OUT)
 run: native
 	./$(NATIVE_BIN)
 
+rerun: clean-native native run
+
 serve: web
 	@echo "Serving $(WEB_DIR) at http://localhost:8000"
 	cd $(WEB_DIR) && python3 -m http.server

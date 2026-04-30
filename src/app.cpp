@@ -135,7 +135,7 @@ void App::initGameEntities() {
     auto ground = registry_.create();
     {
         Transform tf;
-        tf.scale = glm::vec3(20.0f, 1.0f, 20.0f); // 20×20 world units
+        tf.scale = glm::vec3(50.0f, 1.0f, 50.0f); // 50×50 world units
         registry_.emplace<Transform>(ground, tf);
     }
     registry_.emplace<MeshRef>(ground, MeshId::Ground);
@@ -208,8 +208,8 @@ void App::tickSystems(float dt) {
 }
 
 void App::drawGameUI() {
-    hud_.draw(registry_, playerEntity_, vpW_, vpH_);
     inventoryPanel_.draw(registry_, playerEntity_, itemSys_, dispatcher_);
+    hud_.draw(registry_, playerEntity_, vpW_, vpH_);
 }
 
 void App::syncShaderProgramsToRegistry() {
