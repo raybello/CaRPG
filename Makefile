@@ -30,6 +30,7 @@ APP_SRCS := \
     $(SRC_DIR)/scene.cpp \
     $(SRC_DIR)/shader.cpp \
     $(SRC_DIR)/renderer.cpp \
+    $(SRC_DIR)/model_loader.cpp \
     $(SRC_DIR)/game/item_catalog.cpp \
     $(SRC_DIR)/systems/input_system.cpp \
     $(SRC_DIR)/systems/physics_system.cpp \
@@ -57,7 +58,8 @@ ALL_SRCS := $(APP_SRCS) $(IMGUI_SRCS)
 GLM_DIR    := lib/glm
 ENTT_DIR   := lib/entt/single_include
 JSON_DIR   := lib/json/single_include
-INCLUDES := -I$(SRC_DIR) -I$(IMGUI_DIR) -I$(BACKEND_DIR) -I$(IMGUIZMO_DIR) -I$(GLM_DIR) -I$(ENTT_DIR) -I$(JSON_DIR)
+STB_DIR    := lib/assimp/contrib/stb
+INCLUDES := -I$(SRC_DIR) -I$(IMGUI_DIR) -I$(BACKEND_DIR) -I$(IMGUIZMO_DIR) -I$(GLM_DIR) -I$(ENTT_DIR) -I$(JSON_DIR) -I$(STB_DIR)
 
 # Shared compile flags (added to whichever toolchain is used)
 COMMON_CXXFLAGS := -std=c++20 -Wall -Wformat -Wno-unused-function $(INCLUDES)
@@ -78,8 +80,8 @@ ifeq ($(UNAME_S),Linux)
     NATIVE_CXXFLAGS += `sdl2-config --cflags`
 endif
 ifeq ($(UNAME_S),Darwin)
-    NATIVE_LIBS    += -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo `sdl2-config --libs`
-    NATIVE_CXXFLAGS += `sdl2-config --cflags` -I/usr/local/include -I/opt/local/include -DGL_SILENCE_DEPRECATION
+    NATIVE_LIBS    += -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo `sdl2-config --libs` $(shell pkg-config --libs assimp)
+    NATIVE_CXXFLAGS += `sdl2-config --cflags` -I/usr/local/include -I/opt/local/include -DGL_SILENCE_DEPRECATION $(shell pkg-config --cflags assimp)
 endif
 ifeq ($(OS),Windows_NT)
     NATIVE_LIBS    += -lgdi32 -lopengl32 -limm32 `pkg-config --static --libs sdl2`

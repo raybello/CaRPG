@@ -280,7 +280,7 @@ GLuint Renderer::render(entt::registry& reg, const Scene& scene) {
         spotCutoff = std::cos(glm::radians(dl.spotCutoff));
     }
 
-    // 3. Draw all renderable ECS entities
+    // 3. Draw all renderable ECS entities (cube/ground/sphere meshes)
     auto renderView = reg.view<Transform, MeshRef, Material>();
     renderView.each([&](const Transform& tf, const MeshRef& mr, const Material& mat) {
         if (!mat.visible || mat.program == 0) return;
@@ -308,6 +308,66 @@ GLuint Renderer::render(entt::registry& reg, const Scene& scene) {
                 drawMeshBuffers(cubeVao_, cubeVbo_, cubeIbo_, cubeIndexCount_);
                 break;
         }
+    });
+
+    // 4. Draw assimp-loaded models (ModelMesh component)
+    auto modelView = reg.view<Transform, ModelMesh>();
+    modelView.each([&](const Transform& tf, const ModelMesh& mm) {
+        if (!mm.visible || mm.modelShaderProgram == 0 || mm.submeshes.empty()) return;
+
+        glUseProgram(mm.modelShaderProgram);
+        glm::mat4 model = tf.toMatrix() * glm::mat4_cast(mm.rotOffset);
+
+        // Set shared uniforms
+        auto setMat4  = [&](const char* n, const glm::mat4& m) {
+            GLint l = glGetUniformLocation(mm.modelShaderProgram, n);
+            if (l >= 0) glUniformMatrix4fv(l, 1, GL_FALSE, glm::value_ptr(m));
+        };
+        auto setVec3  = [&](const char* n, const glm::vec3& v) {
+            GLint l = glGetUniformLocation(mm.modelShaderProgram, n);
+            if (l >= 0) glUniform3f(l, v.x, v.y, v.z);
+        };
+        auto setFloat = [&](const char* n, float v) {
+            GLint l = glGetUniformLocation(mm.modelShaderProgram, n);
+            if (l >= 0) glUniform1f(l, v);
+        };
+        auto setInt   = [&](const char* n, int v) {
+            GLint l = glGetUniformLocation(mm.modelShaderProgram, n);
+            if (l >= 0) glUniform1i(l, v);
+        };
+
+        setMat4 ("uModel",     model);
+        setMat4 ("uView",      view);
+        setMat4 ("uProj",      proj);
+        setVec3 ("uLightDir",  lightDir);
+        setVec3 ("uLightColor",lightColor);
+        setFloat("uLightType", lightType);
+        setVec3 ("uCameraPos", camPos);
+        setInt  ("uDiffuseTex", 0);   // texture unit 0
+
+        for (const auto& sm : mm.submeshes) {
+            if (sm.indexCount == 0 || sm.vao == 0) continue;
+
+            if (sm.diffuseTex != 0) {
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, sm.diffuseTex);
+                setFloat("uHasTexture", 1.0f);
+            } else {
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, 0);
+                setFloat("uHasTexture", 0.0f);
+                GLint lc = glGetUniformLocation(mm.modelShaderProgram, "uDiffuseColor");
+                if (lc >= 0) glUniform4f(lc,
+                    sm.diffuseColor.r, sm.diffuseColor.g,
+                    sm.diffuseColor.b, sm.diffuseColor.a);
+            }
+
+            glBindVertexArray(sm.vao);
+            glDrawElements(GL_TRIANGLES, (GLsizei)sm.indexCount, GL_UNSIGNED_INT, nullptr);
+            glBindVertexArray(0);
+        }
+
+        glBindTexture(GL_TEXTURE_2D, 0);
     });
 
     glDisable(GL_DEPTH_TEST);

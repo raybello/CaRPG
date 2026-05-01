@@ -137,6 +137,71 @@ static std::string emissiveFrag() {
     return s;
 }
 
+// ---------------------------------------------------------------------------
+// Model shader — Blinn-Phong with optional diffuse texture.
+// Vertex layout: aPos(0), aNormal(1), aTexCoord(2)
+// uHasTexture=1 samples uDiffuseTex; =0 uses uDiffuseColor fallback.
+// ---------------------------------------------------------------------------
+static std::string modelVert() {
+    std::string s = kVersion;
+    s += kAttr; s += " vec3 aPos;\n";
+    s += kAttr; s += " vec3 aNormal;\n";
+    s += kAttr; s += " vec2 aTexCoord;\n";
+    s += "uniform mat4 uModel;\n";
+    s += "uniform mat4 uView;\n";
+    s += "uniform mat4 uProj;\n";
+    s += kVarOut; s += " vec3 vNormal;\n";
+    s += kVarOut; s += " vec3 vWorldPos;\n";
+    s += kVarOut; s += " vec2 vTexCoord;\n";
+    s += "void main() {\n";
+    s += "    vec4 wp = uModel * vec4(aPos, 1.0);\n";
+    s += "    vWorldPos = wp.xyz;\n";
+    s += "    vNormal   = mat3(uModel) * aNormal;\n";
+    s += "    vTexCoord = aTexCoord;\n";
+    s += "    gl_Position = uProj * uView * wp;\n";
+    s += "}\n";
+    return s;
+}
+
+static std::string modelFrag() {
+    std::string s = kVersion;
+    s += kVarIn; s += " vec3 vNormal;\n";
+    s += kVarIn; s += " vec3 vWorldPos;\n";
+    s += kVarIn; s += " vec2 vTexCoord;\n";
+    s += "uniform sampler2D uDiffuseTex;\n";
+    s += "uniform float     uHasTexture;\n";   // 1.0 = sample tex, 0.0 = use color
+    s += "uniform vec4      uDiffuseColor;\n";
+    s += "uniform vec3      uLightDir;\n";
+    s += "uniform vec3      uLightColor;\n";
+    s += "uniform float     uLightType;\n";
+    s += "uniform vec3      uCameraPos;\n";
+    s += kFragOut;
+    s += "void main() {\n";
+#if defined(IMGUI_IMPL_OPENGL_ES2) || defined(__EMSCRIPTEN__)
+    s += "    vec4 base = (uHasTexture > 0.5) ? texture2D(uDiffuseTex, vTexCoord) : uDiffuseColor;\n";
+#else
+    s += "    vec4 base = (uHasTexture > 0.5) ? texture(uDiffuseTex, vTexCoord) : uDiffuseColor;\n";
+#endif
+    s += "    vec3 N = normalize(vNormal);\n";
+    s += "    vec3 V = normalize(uCameraPos - vWorldPos);\n";
+    s += "    vec3 ambient = 0.2 * base.rgb;\n";
+    s += "    vec3 color = ambient;\n";
+    s += "    if (uLightType > 0.5) {\n";
+    s += "        vec3 L = normalize(-uLightDir);\n";
+    s += "        float diff = max(dot(N, L), 0.0);\n";
+    s += "        vec3 H = normalize(L + V);\n";
+    s += "        float spec = pow(max(dot(N, H), 0.0), 32.0);\n";
+    s += "        color = ambient + base.rgb * uLightColor * diff + 0.3 * uLightColor * spec;\n";
+    s += "    }\n";
+#if defined(IMGUI_IMPL_OPENGL_ES2) || defined(__EMSCRIPTEN__)
+    s += "    gl_FragColor = vec4(color, base.a);\n";
+#else
+    s += "    FragColor = vec4(color, base.a);\n";
+#endif
+    s += "}\n";
+    return s;
+}
+
 // Camera slot — placeholder, not used for drawing.
 static std::string cameraPlaceholderVert() {
     std::string s = kVersion;
@@ -174,6 +239,7 @@ void Scene::destroy() {
     cleanup(cubeShader);
     cleanup(cameraShader);
     cleanup(lightShader);
+    cleanup(modelShader);
 }
 
 bool Scene::initDefaultShaders() {
@@ -185,6 +251,8 @@ bool Scene::initDefaultShaders() {
     cameraShader.fragSrc  = cameraPlaceholderFrag();
     lightShader.vertSrc   = emissiveVert();
     lightShader.fragSrc   = emissiveFrag();
+    modelShader.vertSrc   = modelVert();
+    modelShader.fragSrc   = modelFrag();
 
     auto compile = [](ShaderBundle& sb) {
         bool ok = compileShaderProgram(sb.vertSrc, sb.fragSrc, sb.program, sb.log);
@@ -196,10 +264,13 @@ bool Scene::initDefaultShaders() {
     bool okCube = compile(cubeShader);
     compile(cameraShader);
     compile(lightShader);
+    bool okModel = compile(modelShader);
 
     if (!okCube)
         std::fprintf(stderr, "Object shader failed:\n%s\n", cubeShader.log.c_str());
-    return okCube;
+    if (!okModel)
+        std::fprintf(stderr, "Model shader failed:\n%s\n", modelShader.log.c_str());
+    return okCube && okModel;
 }
 
 // ---------------------------------------------------------------------------

@@ -77,6 +77,7 @@ bool compileShaderProgram(const std::string& vertSrc,
     // to query them — works the same on GL 3.0 core and WebGL 1.
     glBindAttribLocation(prog, 0, "aPos");
     glBindAttribLocation(prog, 1, "aNormal");
+    glBindAttribLocation(prog, 2, "aTexCoord");
     glLinkProgram(prog);
 
     GLint ok = 0;

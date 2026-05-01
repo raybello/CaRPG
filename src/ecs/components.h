@@ -6,7 +6,7 @@
 #include "glm_math.h"
 #include <entt/entt.hpp>
 
-// Forward declarations for GL types used in Material
+// Forward declarations for GL types used in Material and ModelMesh
 typedef unsigned int GLuint;
 
 // ---------------------------------------------------------------------------
@@ -220,6 +220,26 @@ struct Material {
     GLuint    program = 0;
     glm::vec3 color   {1.0f, 1.0f, 1.0f};
     bool      visible = true;
+};
+
+// One draw call worth of GPU data from a loaded GLTF/OBJ model.
+// Indices are GL_UNSIGNED_INT. diffuseTex=0 means use diffuseColor instead.
+struct SubMesh {
+    GLuint   vao        = 0;
+    GLuint   vbo        = 0;
+    GLuint   ibo        = 0;
+    uint32_t indexCount = 0;
+    GLuint   diffuseTex = 0;       // 0 = no texture, use diffuseColor
+    glm::vec4 diffuseColor {1.0f, 1.0f, 1.0f, 1.0f};
+};
+
+// Collection of SubMeshes that make up an imported 3D model.
+// Replaces MeshRef+Material on entities that have been loaded via assimp.
+struct ModelMesh {
+    std::vector<SubMesh> submeshes;
+    GLuint    modelShaderProgram = 0;  // shader that handles UV + texture uniforms
+    bool      visible            = true;
+    glm::quat rotOffset          = glm::quat(1.0f, 0.0f, 0.0f, 0.0f); // baked into model matrix
 };
 
 // ---------------------------------------------------------------------------

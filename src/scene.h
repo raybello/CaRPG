@@ -43,6 +43,7 @@ struct Scene {
     ShaderBundle cubeShader;    // "Object" slot
     ShaderBundle cameraShader;
     ShaderBundle lightShader;
+    ShaderBundle modelShader;   // textured Blinn-Phong for assimp-loaded models
 
     // Initialize default shaders + initial compile.
     bool initDefaultShaders();

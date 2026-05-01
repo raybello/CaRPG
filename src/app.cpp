@@ -9,6 +9,7 @@
 #include "ecs/components.h"
 #include "game/item_catalog.h"
 #include "game/game_events.h"
+#include "model_loader.h"
 
 #include <SDL.h>
 #if defined(__EMSCRIPTEN__)
@@ -123,9 +124,22 @@ void App::initGameEntities() {
     registry_.emplace<BaseCarStats>(playerEntity_);
     registry_.emplace<DerivedCarStats>(playerEntity_);
     registry_.emplace<Fuel>(playerEntity_);
-    registry_.emplace<MeshRef>(playerEntity_, MeshId::CarBody);
-    registry_.emplace<Material>(playerEntity_, scene_.cubeShader.program,
-                                glm::vec3(0.8f, 0.15f, 0.1f));
+    // Attempt to load the Porsche GLTF model; fall back to cube if missing.
+    {
+        ModelMesh mm = loadModel("models/2014_porsche_911_turbo_991/scene.gltf");
+        if (!mm.submeshes.empty()) {
+            mm.modelShaderProgram = scene_.modelShader.program;
+            mm.visible            = true;
+            // The Porsche model is exported with its hood facing +Z; rotate 180° around Y
+            // so it aligns with the physics body's -Z forward.
+            mm.rotOffset = glm::angleAxis(glm::radians(180.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+            registry_.emplace<ModelMesh>(playerEntity_, std::move(mm));
+        } else {
+            registry_.emplace<MeshRef>(playerEntity_, MeshId::CarBody);
+            registry_.emplace<Material>(playerEntity_, scene_.cubeShader.program,
+                                        glm::vec3(0.8f, 0.15f, 0.1f));
+        }
+    }
     registry_.emplace<Inventory>(playerEntity_);
     {
         // Player car: fully dynamic body. Suspension spring forces hold it up.
@@ -1061,6 +1075,8 @@ void App::run() {
 
 void App::shutdown() {
     if (glctx_) {
+        // Free GPU resources owned by any ModelMesh components
+        registry_.view<ModelMesh>().each([](ModelMesh& mm) { destroyModelMesh(mm); });
         renderer_.destroy();
         scene_.destroy();
         ImGui_ImplOpenGL3_Shutdown();
