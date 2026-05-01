@@ -50,8 +50,15 @@ private:
     GLuint  sphereIbo_        = 0;
     GLsizei sphereIndexCount_ = 0;
 
+    // Cylinder mesh (axis along Y, radius 0.5, height 1.0)
+    GLuint  cylinderVao_        = 0;
+    GLuint  cylinderVbo_        = 0;
+    GLuint  cylinderIbo_        = 0;
+    GLsizei cylinderIndexCount_ = 0;
+
     void createGroundMesh();
     void createCubeMesh();
     void createSphereMesh();
+    void createCylinderMesh();
     void destroyFbo();
 };

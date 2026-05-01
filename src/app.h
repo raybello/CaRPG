@@ -116,6 +116,12 @@ private:
     void drawGameUI();
     void syncShaderProgramsToRegistry();
     void spawnWorldItem(ItemId id, const glm::vec3& pos);
+    void spawnObstaclesAndProps();
+    entt::entity spawnStaticBox(const glm::vec3& pos, const glm::vec3& halfExtents,
+                                const glm::quat& rot,  const glm::vec3& color,
+                                MeshId meshId = MeshId::Cube);
+    entt::entity spawnPushable (const glm::vec3& pos, const glm::vec3& halfExtents,
+                                float mass,             const glm::vec3& color);
 
     // Entity display name (for the panel list)
     std::string entityDisplayName(entt::entity e) const;

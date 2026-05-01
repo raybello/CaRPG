@@ -9,7 +9,8 @@
       "Bash(timeout 5 ./build/web3d)",
       "Bash(brew install *)",
       "Bash(make clean-web *)",
-      "Bash(make web *)"
+      "Bash(make web *)",
+      "Bash(./build/web3d)"
     ]
   }
 }

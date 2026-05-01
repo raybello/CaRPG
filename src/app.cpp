@@ -250,6 +250,78 @@ void App::initGameEntities() {
     spawnWorldItem(ItemId::EnginePart,       glm::vec3( 4.0f, 0.0f,  6.0f));
     spawnWorldItem(ItemId::RoadSignFragment, glm::vec3(-4.0f, 0.0f, -5.0f));
     spawnWorldItem(ItemId::OverchargeCell,   glm::vec3( 9.0f, 0.0f, -3.0f));
+
+    spawnObstaclesAndProps();
+}
+
+void App::spawnObstaclesAndProps() {
+    // Common material colours
+    const glm::vec3 kYellow    {0.90f, 0.78f, 0.08f};
+    const glm::vec3 kConcrete  {0.72f, 0.67f, 0.60f};
+    const glm::vec3 kDarkGray  {0.42f, 0.42f, 0.42f};
+    const glm::vec3 kMidGray   {0.58f, 0.58f, 0.58f};
+    const glm::vec3 kBrown     {0.55f, 0.35f, 0.15f};
+    const glm::vec3 kDarkBrown {0.35f, 0.22f, 0.08f};
+    const glm::vec3 kBrownGray {0.50f, 0.42f, 0.35f};
+
+    const glm::quat kIdent  {1.0f, 0.0f, 0.0f, 0.0f};
+    // Ascending ramp: low end faces the car (+Z body side), rises toward -Z.
+    // With R_x(+15°): bottom +Z corner is at y=0 when center.y≈1.07.
+    const glm::quat kRampUp = glm::angleAxis(glm::radians( 15.0f), glm::vec3(1,0,0));
+
+    // ---------------------------------------------------------------------------
+    // Speed bumps — three yellow cylinders lying across the road (axis = X).
+    // The cylinder mesh is Y-axis; R_z(90°) rotates it onto X.
+    // Body half-extents: Y = half-length (2.5 m), X/Z = radius (0.14 m).
+    // Center y = radius so the bottom just touches the ground plane.
+    // ---------------------------------------------------------------------------
+    const glm::quat kBumpRot = glm::angleAxis(glm::radians(90.0f), glm::vec3(0,0,1));
+    const glm::vec3 kBumpHE  = {0.14f, 2.5f, 0.14f};
+    spawnStaticBox({-2.0f, 0.14f,  -4.0f}, kBumpHE, kBumpRot, kYellow, MeshId::Cylinder);
+    spawnStaticBox({ 2.0f, 0.14f,  -7.0f}, kBumpHE, kBumpRot, kYellow, MeshId::Cylinder);
+    spawnStaticBox({-1.0f, 0.14f, -11.0f}, kBumpHE, kBumpRot, kYellow, MeshId::Cylinder);
+
+    // ---------------------------------------------------------------------------
+    // Jersey barriers — a pair flanking the ramp corridor
+    // ---------------------------------------------------------------------------
+    spawnStaticBox({-5.0f, 0.80f, -13.5f}, {0.30f, 0.80f, 2.5f}, kIdent, kConcrete);
+    spawnStaticBox({ 5.0f, 0.80f, -13.5f}, {0.30f, 0.80f, 2.5f}, kIdent, kConcrete);
+
+    // ---------------------------------------------------------------------------
+    // Main ramp + flat-top platform + back wall
+    //
+    // Geometry (R_x +15°, he = {3, 0.3, 3}):
+    //   center.y = 1.07 so the low (+Z) edge touches y = 0
+    //   top of the ramp (-Z edge) reaches y ≈ 2.14
+    // ---------------------------------------------------------------------------
+    spawnStaticBox({0.0f, 1.07f, -17.5f}, {3.0f, 0.30f, 3.0f}, kRampUp, kDarkGray);
+
+    // Flat platform — top face flush with the ramp peak (~2.14 m)
+    spawnStaticBox({0.0f, 1.89f, -23.0f}, {3.5f, 0.25f, 2.5f}, kIdent, kMidGray);
+
+    // Short wall at the platform's far edge — stops the car from rolling off
+    spawnStaticBox({0.0f, 2.24f, -25.6f}, {3.5f, 0.35f, 0.25f}, kIdent, kConcrete);
+
+    // ---------------------------------------------------------------------------
+    // Side ramp (right of centre, no flat top) — same 15° pitch, stand-alone
+    // ---------------------------------------------------------------------------
+    spawnStaticBox({14.0f, 1.07f, -5.0f}, {2.5f, 0.30f, 3.0f}, kRampUp, kDarkGray);
+
+    // ---------------------------------------------------------------------------
+    // Pushable crates — small / medium / large, scattered around the arena
+    // ---------------------------------------------------------------------------
+    // Small (40 kg)
+    spawnPushable({ 7.0f, 0.40f,  3.0f}, {0.40f, 0.40f, 0.40f},  40.0f, kBrown);
+    spawnPushable({-7.0f, 0.40f,  2.0f}, {0.40f, 0.40f, 0.40f},  40.0f, kBrown);
+    spawnPushable({ 5.0f, 0.40f, -2.5f}, {0.40f, 0.40f, 0.40f},  40.0f, kBrown);
+
+    // Medium (100 kg)
+    spawnPushable({10.0f, 0.60f, -3.0f}, {0.60f, 0.60f, 0.60f}, 100.0f, kDarkBrown);
+    spawnPushable({-9.0f, 0.60f,  5.0f}, {0.60f, 0.60f, 0.60f}, 100.0f, kDarkBrown);
+
+    // Large (250 kg)
+    spawnPushable({ 2.0f, 0.50f,  6.0f}, {0.80f, 0.50f, 0.90f}, 250.0f, kBrownGray);
+    spawnPushable({-3.0f, 0.50f,  8.0f}, {0.80f, 0.50f, 0.90f}, 250.0f, kBrownGray);
 }
 
 void App::spawnWorldItem(ItemId id, const glm::vec3& pos) {
@@ -285,6 +357,69 @@ void App::spawnWorldItem(ItemId id, const glm::vec3& pos) {
     rb.angularDamping  = 0.40f;
     rb.useGravity      = true;
     registry_.emplace<RigidBody>(ent, rb);
+}
+
+entt::entity App::spawnStaticBox(const glm::vec3& pos, const glm::vec3& halfExtents,
+                                  const glm::quat& rot, const glm::vec3& color,
+                                  MeshId meshId) {
+    auto ent = registry_.create();
+    registry_.emplace<ObstacleTag>(ent);
+
+    Transform tf;
+    tf.position = pos;
+    tf.rotation = rot;
+    tf.scale    = halfExtents * 2.0f;
+    registry_.emplace<Transform>(ent, tf);
+
+    registry_.emplace<MeshRef>(ent, meshId);
+    registry_.emplace<Material>(ent, scene_.cubeShader.program, color);
+
+    BoxCollider bc;
+    bc.halfExtents = halfExtents;
+    registry_.emplace<BoxCollider>(ent, bc);
+
+    RigidBody rb;
+    rb.mass            = 0.0f;
+    rb.inverseMass     = 0.0f;
+    rb.fixed           = true;
+    rb.useGravity      = false;
+    rb.invInertiaLocal = glm::mat3(0.0f);
+    rb.restitution     = 0.25f;
+    rb.friction        = 0.75f;
+    registry_.emplace<RigidBody>(ent, rb);
+    return ent;
+}
+
+entt::entity App::spawnPushable(const glm::vec3& pos, const glm::vec3& halfExtents,
+                                 float mass, const glm::vec3& color) {
+    auto ent = registry_.create();
+    registry_.emplace<PushableTag>(ent);
+
+    Transform tf;
+    tf.position = pos;
+    tf.scale    = halfExtents * 2.0f;
+    registry_.emplace<Transform>(ent, tf);
+
+    registry_.emplace<MeshRef>(ent, MeshId::Cube);
+    registry_.emplace<Material>(ent, scene_.cubeShader.program, color);
+
+    BoxCollider bc;
+    bc.halfExtents = halfExtents;
+    registry_.emplace<BoxCollider>(ent, bc);
+
+    RigidBody rb;
+    rb.mass            = mass;
+    rb.inverseMass     = 1.0f / mass;
+    rb.fixed           = false;
+    rb.kinematic       = false;
+    rb.useGravity      = true;
+    rb.invInertiaLocal = RigidBodySystem::boxInvInertia(mass, halfExtents);
+    rb.restitution     = 0.3f;
+    rb.friction        = 0.65f;
+    rb.linearDamping   = 0.35f;
+    rb.angularDamping  = 0.45f;
+    registry_.emplace<RigidBody>(ent, rb);
+    return ent;
 }
 
 void App::connectEventListeners() {
@@ -384,6 +519,8 @@ std::string App::entityDisplayName(entt::entity e) const {
         }
         return "Item";
     }
+    if (registry_.all_of<ObstacleTag>(e)) return "Obstacle";
+    if (registry_.all_of<PushableTag>(e)) return "Crate";
     if (registry_.all_of<MeshRef>(e)) {
         if (registry_.get<MeshRef>(e).meshId == MeshId::Ground)
             return "Ground";

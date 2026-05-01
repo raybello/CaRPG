@@ -16,6 +16,8 @@ struct PlayerTag   {};
 struct NpcTag      {};
 struct ItemWorldTag{};  // item lying in the world waiting to be picked up
 struct CameraTag   {};  // marks the scene/editor camera entity
+struct ObstacleTag {};  // fixed immovable obstacle (ramp, bump, barrier, platform)
+struct PushableTag {};  // dynamic prop the player can push around (crate, barrel)
 
 // ---------------------------------------------------------------------------
 // Item IDs — must match LOOT.json "id" strings
@@ -43,6 +45,7 @@ enum class MeshId : uint32_t {
     CarBody  = 2,
     CarWheel = 3,
     Sphere   = 4,
+    Cylinder = 5,
     Count
 };
 

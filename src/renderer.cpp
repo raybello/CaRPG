@@ -122,10 +122,60 @@ void Renderer::createSphereMesh() {
     sphereIndexCount_ = (GLsizei)indices.size();
 }
 
+void Renderer::createCylinderMesh() {
+    const int   slices = 24;
+    const float r = 0.5f;
+    std::vector<Vertex>   verts;
+    std::vector<uint16_t> indices;
+
+    // Side band — two rings of vertices with outward normals.
+    for (int i = 0; i <= slices; ++i) {
+        float theta = 2.0f * (float)M_PI * i / slices;
+        float ct = std::cos(theta), st = std::sin(theta);
+        verts.push_back({ r*ct,  0.5f, r*st,  ct, 0.0f, st });
+        verts.push_back({ r*ct, -0.5f, r*st,  ct, 0.0f, st });
+    }
+    for (int i = 0; i < slices; ++i) {
+        uint16_t a = (uint16_t)(i * 2);
+        indices.push_back(a);     indices.push_back(a+1); indices.push_back(a+2);
+        indices.push_back(a+1);   indices.push_back(a+3); indices.push_back(a+2);
+    }
+
+    // Top cap
+    auto addCap = [&](float y, float ny) {
+        uint16_t center = (uint16_t)verts.size();
+        verts.push_back({ 0.0f, y, 0.0f, 0.0f, ny, 0.0f });
+        uint16_t ring = (uint16_t)verts.size();
+        for (int i = 0; i <= slices; ++i) {
+            float theta = 2.0f * (float)M_PI * i / slices;
+            verts.push_back({ r*std::cos(theta), y, r*std::sin(theta), 0.0f, ny, 0.0f });
+        }
+        for (int i = 0; i < slices; ++i) {
+            if (ny > 0.0f) {
+                indices.push_back(center);
+                indices.push_back((uint16_t)(ring + i));
+                indices.push_back((uint16_t)(ring + i + 1));
+            } else {
+                indices.push_back(center);
+                indices.push_back((uint16_t)(ring + i + 1));
+                indices.push_back((uint16_t)(ring + i));
+            }
+        }
+    };
+    addCap( 0.5f,  1.0f);
+    addCap(-0.5f, -1.0f);
+
+    uploadMesh(verts.data(),   (GLsizeiptr)(verts.size()   * sizeof(Vertex)),
+               indices.data(), (GLsizeiptr)(indices.size() * sizeof(uint16_t)),
+               cylinderVao_, cylinderVbo_, cylinderIbo_);
+    cylinderIndexCount_ = (GLsizei)indices.size();
+}
+
 bool Renderer::init() {
     createGroundMesh();
     createCubeMesh();
     createSphereMesh();
+    createCylinderMesh();
     return true;
 }
 
@@ -301,6 +351,9 @@ GLuint Renderer::render(entt::registry& reg, const Scene& scene) {
             case MeshId::Sphere:
                 drawMeshBuffers(sphereVao_, sphereVbo_, sphereIbo_, sphereIndexCount_);
                 break;
+            case MeshId::Cylinder:
+                drawMeshBuffers(cylinderVao_, cylinderVbo_, cylinderIbo_, cylinderIndexCount_);
+                break;
             case MeshId::Cube:
             case MeshId::CarBody:
             case MeshId::CarWheel:
@@ -387,13 +440,16 @@ void Renderer::destroy() {
     if (groundIbo_) { glDeleteBuffers(1, &groundIbo_); groundIbo_ = 0; }
     if (cubeVbo_)   { glDeleteBuffers(1, &cubeVbo_);   cubeVbo_   = 0; }
     if (cubeIbo_)   { glDeleteBuffers(1, &cubeIbo_);   cubeIbo_   = 0; }
-    if (sphereVbo_) { glDeleteBuffers(1, &sphereVbo_); sphereVbo_ = 0; }
-    if (sphereIbo_) { glDeleteBuffers(1, &sphereIbo_); sphereIbo_ = 0; }
+    if (sphereVbo_)    { glDeleteBuffers(1, &sphereVbo_);    sphereVbo_    = 0; }
+    if (sphereIbo_)    { glDeleteBuffers(1, &sphereIbo_);    sphereIbo_    = 0; }
+    if (cylinderVbo_)  { glDeleteBuffers(1, &cylinderVbo_);  cylinderVbo_  = 0; }
+    if (cylinderIbo_)  { glDeleteBuffers(1, &cylinderIbo_);  cylinderIbo_  = 0; }
 
 #if !defined(IMGUI_IMPL_OPENGL_ES2) && !defined(__EMSCRIPTEN__)
-    if (groundVao_) { glDeleteVertexArrays(1, &groundVao_); groundVao_ = 0; }
-    if (cubeVao_)   { glDeleteVertexArrays(1, &cubeVao_);   cubeVao_   = 0; }
-    if (sphereVao_) { glDeleteVertexArrays(1, &sphereVao_); sphereVao_ = 0; }
+    if (groundVao_)   { glDeleteVertexArrays(1, &groundVao_);   groundVao_   = 0; }
+    if (cubeVao_)     { glDeleteVertexArrays(1, &cubeVao_);     cubeVao_     = 0; }
+    if (sphereVao_)   { glDeleteVertexArrays(1, &sphereVao_);   sphereVao_   = 0; }
+    if (cylinderVao_) { glDeleteVertexArrays(1, &cylinderVao_); cylinderVao_ = 0; }
 #endif
 }
 
