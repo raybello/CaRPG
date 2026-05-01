@@ -128,23 +128,51 @@ void App::initGameEntities() {
                                 glm::vec3(0.8f, 0.15f, 0.1f));
     registry_.emplace<Inventory>(playerEntity_);
     {
-        // Player car: kinematic rigid body. The car's bicycle controller
-        // owns its motion; the rigid body just transfers momentum into
-        // dynamic items it bumps into.
-        BoxCollider bc; bc.halfExtents = glm::vec3(1.0f, 0.5f, 2.0f);
+        // Player car: fully dynamic body. Suspension spring forces hold it up.
+        // skipGroundCollision prevents the SAT ground impulse from fighting the spring.
+        BoxCollider bc;
+        bc.halfExtents        = glm::vec3(1.0f, 0.5f, 2.0f);
+        bc.skipGroundCollision = true;
         registry_.emplace<BoxCollider>(playerEntity_, bc);
+
+        // Spawn slightly above ground so suspension settles naturally.
+        registry_.get<Transform>(playerEntity_).position.y = 0.6f;
 
         RigidBody rb;
         rb.mass            = 1500.0f;
-        rb.inverseMass     = 1.0f / 1500.0f;  // dynamic — forces affect it
+        rb.inverseMass     = 1.0f / 1500.0f;
         rb.kinematic       = false;
-        rb.useGravity      = false;            // gravity handled via Y constraint
-        rb.invInertiaLocal = RigidBodySystem::boxInvInertia(1500.0f, bc.halfExtents);
-        rb.restitution     = 0.15f;
-        rb.friction        = 0.7f;
-        rb.linearDamping   = 0.0f;            // PhysicsSystem applies drag directly
-        rb.angularDamping  = 0.98f;           // high: prevent uncontrolled spinning
+        rb.useGravity      = true;             // suspension holds the car up
+        rb.invInertiaLocal = RigidBodySystem::boxInvInertia(1500.0f,
+                                glm::vec3(1.0f, 0.35f, 2.0f)); // tighter Y → harder to roll
+        rb.restitution     = 0.05f;
+        rb.friction        = 0.8f;
+        rb.linearDamping   = 0.02f;
+        rb.angularDamping  = 0.85f;            // damp roll/pitch but allow them
         registry_.emplace<RigidBody>(playerEntity_, rb);
+
+        // 4-wheel suspension layout (car-local space):
+        //   [0]=front-left  [1]=front-right  [2]=rear-left  [3]=rear-right
+        CarVehicle cv;
+        cv.topSpeed  = 30.0f;
+        cv.maxTorque = 4000.0f;
+        auto setWheel = [&](int i, float x, float y, float z, bool steered) {
+            cv.wheels[i].localOffset        = glm::vec3(x, y, z);
+            cv.wheels[i].isSteered          = steered;
+            cv.wheels[i].isDriven           = true;
+            cv.wheels[i].suspensionRestDist = 0.5f;
+            cv.wheels[i].suspensionTravel   = 0.35f;
+            cv.wheels[i].springStrength     = 38000.0f;
+            cv.wheels[i].springDamper       = 3800.0f;
+            cv.wheels[i].gripFactor         = 0.75f;
+            cv.wheels[i].wheelMass          = 20.0f;
+            cv.wheels[i].radius             = 0.35f;
+        };
+        setWheel(0, -0.95f, -0.5f, -1.7f, true);   // front-left  (steered)
+        setWheel(1,  0.95f, -0.5f, -1.7f, true);   // front-right (steered)
+        setWheel(2, -0.95f, -0.5f,  1.7f, false);  // rear-left
+        setWheel(3,  0.95f, -0.5f,  1.7f, false);  // rear-right
+        registry_.emplace<CarVehicle>(playerEntity_, cv);
     }
 
     // --- Chase / free-look camera ---
@@ -275,25 +303,17 @@ void App::tickSystems(float dt) {
 
     statSys_.update(registry_);
 
-    // PhysicsSystem applies drive/lateral forces to the player's RigidBody
-    // and sets rb.angularVel.y. Pass the player entity when the gizmo just
-    // moved it so the Y=0 ground-lock is skipped for that one frame.
-    entt::entity skipY = playerGizmoMoved_ ? playerEntity_ : entt::entity{entt::null};
-    physicsSys_.update(registry_, dt, skipY);
+    // PhysicsSystem is called once per substep via preStepCb so suspension
+    // spring forces are re-evaluated every integration step, not just once
+    // per frame. This prevents substeps 2-N from running with zero spring force.
     playerGizmoMoved_ = false;
+    rigidBodySys_.preStepCb = [&](entt::registry& r, float h) {
+        physicsSys_.update(r, h);
+    };
 
     // RigidBodySystem integrates forceAccum/angularVel → velocity → position
     // for all dynamic entities including the player.
     rigidBodySys_.update(registry_, dt);
-
-    // Re-enforce the Y=0 ground plane for the player after RigidBodySystem
-    // may have nudged tf.position.y slightly during integration.
-    if (registry_.valid(playerEntity_) && skipY == entt::entity{entt::null}) {
-        auto* tf = registry_.try_get<Transform>(playerEntity_);
-        auto* rb = registry_.try_get<RigidBody>(playerEntity_);
-        if (tf) tf->position.y = 0.0f;
-        if (rb) { rb->linearVel.y = 0.0f; rb->forceAccum.y = 0.0f; }
-    }
 
     fuelSys_.update(registry_, dispatcher_, dt);
     itemSys_.update(registry_, dispatcher_, dt);
@@ -613,32 +633,50 @@ void App::drawPanel() {
 
     // ---- Physics system settings ----------------------------------------
     if (ImGui::CollapsingHeader("Physics", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::TextDisabled("Throttle / Power");
-        ImGui::SliderFloat("Power Scale",       &physicsSys_.powerScale,       0.01f, 2.0f);
-        ImGui::SliderFloat("Throttle Response", &physicsSys_.throttleResponse, 0.1f,  10.0f);
-        ImGui::SliderFloat("Max Accel",         &physicsSys_.maxAccel,         1.0f,  200.0f);
+        ImGui::TextDisabled("Input Response");
+        ImGui::SliderFloat("Throttle Response", &physicsSys_.throttleResponse, 0.1f, 10.0f);
+        ImGui::SliderFloat("Steer Response",    &physicsSys_.steerResponse,    0.1f, 10.0f);
+        ImGui::SliderFloat("Max Steer (deg)",   &physicsSys_.maxSteerAngleRad, 0.05f, 1.5f);
 
-        ImGui::Separator();
-        ImGui::TextDisabled("Brake / Reverse");
-        ImGui::SliderFloat("Brake Sensitivity", &physicsSys_.brakeSensitivity, 10.0f,  500.0f);
-        ImGui::SliderFloat("Reverse Power Mul", &physicsSys_.reversePowerMul,  0.1f,   2.0f);
-        ImGui::SliderFloat("Reverse Speed Mul", &physicsSys_.reverseSpeedMul,  0.1f,   2.0f);
-        ImGui::SliderFloat("Engine Brake",      &physicsSys_.engineBrake,      0.0f,   10.0f);
+        // Per-vehicle suspension tuning (syncs all 4 wheels when changed).
+        if (auto* cv = registry_.try_get<CarVehicle>(playerEntity_)) {
+            ImGui::Separator();
+            ImGui::TextDisabled("Vehicle");
+            ImGui::SliderFloat("Top Speed (m/s)", &cv->topSpeed,  5.0f, 100.0f);
+            ImGui::SliderFloat("Max Torque (N)",  &cv->maxTorque, 100.0f, 20000.0f);
 
-        ImGui::Separator();
-        ImGui::TextDisabled("Friction");
-        ImGui::SliderFloat("Drag",              &physicsSys_.drag,             0.0f,  10.0f);
-        ImGui::SliderFloat("Lateral Friction",  &physicsSys_.lateralFriction,  0.1f,  50.0f);
-        ImGui::SliderFloat("Handbrake Grip Mul",&physicsSys_.handbrakeGripMul, 0.01f,  1.0f);
-        ImGui::SliderFloat("Handbrake Drag",    &physicsSys_.handbrakeDrag,    0.0f,  20.0f);
+            ImGui::Separator();
+            ImGui::TextDisabled("Suspension (all wheels)");
+            float springK    = cv->wheels[0].springStrength;
+            float springD    = cv->wheels[0].springDamper;
+            float grip       = cv->wheels[0].gripFactor;
+            float restDist   = cv->wheels[0].suspensionRestDist;
+            bool changed = false;
+            changed |= ImGui::SliderFloat("Spring K (N/m)",  &springK,  1000.0f, 100000.0f);
+            changed |= ImGui::SliderFloat("Spring Damp",     &springD,  100.0f,  20000.0f);
+            changed |= ImGui::SliderFloat("Grip Factor",     &grip,     0.0f,    2.0f);
+            changed |= ImGui::SliderFloat("Rest Length (m)", &restDist, 0.1f,    1.5f);
+            if (changed) {
+                for (auto& w : cv->wheels) {
+                    w.springStrength     = springK;
+                    w.springDamper       = springD;
+                    w.gripFactor         = grip;
+                    w.suspensionRestDist = restDist;
+                }
+            }
 
-        ImGui::Separator();
-        ImGui::TextDisabled("Steering");
-        ImGui::SliderFloat("Steer Response",    &physicsSys_.steerResponse,    0.1f,  20.0f);
-        ImGui::SliderFloat("Max Steer (deg)",   &physicsSys_.maxSteerAngleRad, 0.05f,  1.5f);
-        ImGui::SliderFloat("Wheelbase",         &physicsSys_.wheelbase,        0.5f,  10.0f);
-        ImGui::SliderFloat("Pivot Min Speed",   &physicsSys_.pivotMinSpeed,    0.1f,  10.0f);
-        ImGui::SliderFloat("Pivot Yaw Rate",    &physicsSys_.pivotYawRate,     0.1f,   5.0f);
+            ImGui::Separator();
+            ImGui::TextDisabled("Wheel Debug");
+            const char* labels[] = {"FL", "FR", "RL", "RR"};
+            for (int i = 0; i < CarVehicle::kWheelCount; ++i) {
+                const auto& w = cv->wheels[i];
+                ImGui::Text("%s: %s  comp=%.2f  dist=%.3f",
+                    labels[i],
+                    w.grounded ? "grounded" : "air    ",
+                    w.compressionRatio,
+                    w.contactDist);
+            }
+        }
     }
 
     ImGui::Separator();

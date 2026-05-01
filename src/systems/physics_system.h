@@ -1,35 +1,22 @@
 #pragma once
 #include <entt/entt.hpp>
 
-// Kinematic bicycle car model.
-// All parameters are tunable at runtime; defaults give a forgiving arcade
-// feel with gradual ramps.
+// Per-wheel raycast suspension system.
+//
+// Replaces the bicycle model. Each frame (or substep via RigidBodySystem::preStepCb):
+//   1. Smooth CarInput → CarVehicle.appliedThrottle / appliedSteer
+//   2. For each wheel: raycast downward → suspension spring, lateral grip, drive force
+//   3. All forces accumulate via rbAddForceAtPosition → torques are implicit
+//
+// The car body is fully dynamic (gravity + suspension) — no Y-constraint needed.
 class PhysicsSystem {
 public:
-    void update(entt::registry& reg, float dt,
-                entt::entity skipYConstraintFor = entt::null);
+    void update(entt::registry& reg, float dt);
 
-    // ---- Throttle / power ------------------------------------------------
-    float powerScale       = 0.35f;   // global throttle→force scale
-    float throttleResponse = 1.6f;    // 1/sec — exp ramp of applied throttle
-    float maxAccel         = 60.0f;   // hard cap on |longitudinal accel|
+    // ---- Input smoothing ------------------------------------------------
+    float throttleResponse = 3.0f;   // 1/sec exponential ramp toward target
+    float steerResponse    = 5.0f;
 
-    // ---- Brake / reverse -------------------------------------------------
-    float brakeSensitivity = 180.0f;
-    float reversePowerMul  = 0.55f;
-    float reverseSpeedMul  = 0.45f;
-    float engineBrake      = 1.2f;
-
-    // ---- Friction --------------------------------------------------------
-    float drag             = 1.4f;    // forward rolling resistance / sec
-    float lateralFriction  = 8.0f;    // tire grip / sec (high = no slide)
-    float handbrakeGripMul = 0.15f;   // multiplies lateralFriction
-    float handbrakeDrag    = 3.0f;    // extra forward drag when handbraking
-
-    // ---- Steering (bicycle model) ---------------------------------------
-    float steerResponse    = 6.0f;    // 1/sec — exp ramp of applied steer
-    float maxSteerAngleRad = 0.55f;   // ~31° — wheel max
-    float wheelbase        = 2.5f;    // m — distance between axles
-    float pivotMinSpeed    = 1.5f;    // below this, low-speed pivot blends in
-    float pivotYawRate     = 1.4f;    // rad/s — pivot speed at rest
+    // ---- Steering angle -------------------------------------------------
+    float maxSteerAngleRad = 0.52f;  // ~30 degrees
 };

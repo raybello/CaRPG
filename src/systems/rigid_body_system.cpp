@@ -387,13 +387,17 @@ void stepOnce(entt::registry& reg, float dt, const glm::vec3& gravity,
             // box vs plane (always treat the plane side as B for the contact,
             // but our resolve helper takes the plane as "no body B").
             if (A.box && B.plane) {
-                OBB obbA = makeOBB(A.tf->position, A.box->halfExtents, A.tf->rotation);
-                detectBoxPlane(obbA, *B.plane, A.ent, contacts);
+                if (!A.box->skipGroundCollision) {
+                    OBB obbA = makeOBB(A.tf->position, A.box->halfExtents, A.tf->rotation);
+                    detectBoxPlane(obbA, *B.plane, A.ent, contacts);
+                }
                 continue;
             }
             if (B.box && A.plane) {
-                OBB obbB = makeOBB(B.tf->position, B.box->halfExtents, B.tf->rotation);
-                detectBoxPlane(obbB, *A.plane, B.ent, contacts);
+                if (!B.box->skipGroundCollision) {
+                    OBB obbB = makeOBB(B.tf->position, B.box->halfExtents, B.tf->rotation);
+                    detectBoxPlane(obbB, *A.plane, B.ent, contacts);
+                }
                 continue;
             }
 
@@ -473,6 +477,7 @@ void RigidBodySystem::update(entt::registry& reg, float dt) {
     float h      = dt / (float)nSteps;
 
     for (int i = 0; i < nSteps; ++i) {
+        if (preStepCb) preStepCb(reg, h);
         stepOnce(reg, h, gravity, positionalBias, penetrationSlop);
     }
 }

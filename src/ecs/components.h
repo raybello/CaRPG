@@ -155,6 +155,10 @@ struct RigidBody {
 // the world-space OBB is reconstructed from Transform each step.
 struct BoxCollider {
     glm::vec3 halfExtents {0.5f, 0.5f, 0.5f};
+    // When true, this collider is excluded from box-vs-plane (ground) contact
+    // generation. Used on the player car so the suspension spring owns the
+    // vertical axis instead of fighting the SAT ground impulse.
+    bool skipGroundCollision = false;
 };
 
 // Infinite plane collider in world space. Stored as { n, d } with n·x = d.
@@ -163,6 +167,46 @@ struct BoxCollider {
 struct PlaneCollider {
     glm::vec3 normal {0.0f, 1.0f, 0.0f};
     float     d      = 0.0f;
+};
+
+// ---------------------------------------------------------------------------
+// Per-wheel suspension state — embedded in CarVehicle (4 per car).
+// ---------------------------------------------------------------------------
+struct WheelState {
+    // ---- Configuration (set once at entity creation) ----------------------
+    glm::vec3 localOffset       {0.0f};   // wheel attachment point in car-local space
+    bool      isSteered         = false;  // front wheels turn with steering input
+    bool      isDriven          = true;   // receives drive/brake torque
+
+    float suspensionRestDist    = 0.5f;   // natural spring length (m)
+    float suspensionTravel      = 0.35f;  // max compression beyond rest length (m)
+    float springStrength        = 38000.0f; // N/m
+    float springDamper          = 3800.0f;  // N·s/m
+    float gripFactor            = 0.75f;  // [0..1] lateral grip multiplier
+    float wheelMass             = 20.0f;  // kg — used for lateral impulse scaling
+    float radius                = 0.35f;  // m — visual / clearance reference
+
+    // ---- Runtime state (written by PhysicsSystem each frame) --------------
+    bool  grounded              = false;
+    float compressionRatio      = 0.0f;  // 0 = fully extended, 1 = fully compressed
+    float contactDist           = 0.0f;  // last successful raycast distance
+};
+
+// ---------------------------------------------------------------------------
+// CarVehicle — top-level vehicle component; holds the 4-wheel suspension state
+// and smoothed drive inputs. Added to the player entity alongside RigidBody.
+// ---------------------------------------------------------------------------
+struct CarVehicle {
+    static constexpr int kWheelCount = 4;
+    // Layout: [0]=front-left, [1]=front-right, [2]=rear-left, [3]=rear-right
+    WheelState wheels[kWheelCount];
+
+    float topSpeed   = 30.0f;    // m/s — used to normalise speed for power curve
+    float maxTorque  = 4000.0f;  // N — peak drive force per driven wheel
+
+    // Smoothed inputs written by PhysicsSystem each substep.
+    float appliedThrottle = 0.0f;  // [0, +1]
+    float appliedSteer    = 0.0f;  // [-1, +1]
 };
 
 // ---------------------------------------------------------------------------

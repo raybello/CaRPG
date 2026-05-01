@@ -1,166 +1,207 @@
 #include "physics_system.h"
 #include "ecs/components.h"
+#include "raycast.h"
+#include "rigid_body_system.h"
+#include <glm/gtc/quaternion.hpp>
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 // =============================================================================
-// Force-based car model
+// Per-wheel raycast suspension — replaces the bicycle model.
 //
-// PhysicsSystem is now purely a "force applier":
-//   • Reads CarInput and smooth-ramps applied throttle/steer
-//   • Applies longitudinal drive force, drag, and lateral-grip force to
-//     RigidBody.forceAccum — RigidBodySystem integrates these each frame
-//   • Sets RigidBody.angularVel.y directly to the bicycle-model yaw rate
-//     so RigidBodySystem's quaternion integrator handles steering rotation
-//   • Enforces the Y = 0 ground plane constraint on the dynamic car body
-//     (cleared when the gizmo is repositioning the player)
-//   • Syncs the Velocity component from RigidBody for HUD / camera use
+// For each of the 4 wheels each substep:
+//   a) Suspension spring:  springDir * (offset*K - vel*D)
+//   b) Lateral grip:       cancel sideways velocity at the tire contact point
+//   c) Drive / brake:      forward force through a power curve, or brake force
+//
+// All forces go through rbAddForceAtPosition so off-centre forces generate
+// torques automatically, producing natural weight transfer / roll.
 // =============================================================================
 
 namespace {
 
-inline bool finiteV(const glm::vec3& v) {
-    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
-}
-inline bool finiteQ(const glm::quat& q) {
-    return std::isfinite(q.w) && std::isfinite(q.x) &&
-           std::isfinite(q.y) && std::isfinite(q.z);
-}
 inline float safeF(float x, float fallback = 0.0f) {
     return std::isfinite(x) ? x : fallback;
 }
-inline glm::vec3 safeNormalize(const glm::vec3& v, const glm::vec3& fallback) {
-    if (!finiteV(v)) return fallback;
-    float len = glm::length(v);
-    return (len > 1e-4f) ? v / len : fallback;
-}
 
-// Extract yaw from any quaternion and return a clean pure-Y rotation.
-inline glm::quat extractYaw(const glm::quat& q) {
-    if (!finiteQ(q)) return glm::quat(1, 0, 0, 0);
-    float yaw = std::atan2(2.0f * (q.w * q.y + q.x * q.z),
-                           1.0f - 2.0f * (q.y * q.y + q.x * q.x));
-    if (!std::isfinite(yaw)) yaw = 0.0f;
-    return glm::angleAxis(yaw, glm::vec3(0, 1, 0));
-}
+// Collidable geometry description for per-wheel raycasting.
+// One entry per fixed entity that has a plane or box collider.
+struct CollidableRef {
+    const glm::vec3*  planeNormal = nullptr;   // non-null → plane collider
+    float             planeD      = 0.0f;
+    const glm::vec3*  boxCenter   = nullptr;   // non-null → box collider
+    const glm::vec3*  boxHalfExt  = nullptr;
+    const glm::quat*  boxRot      = nullptr;
+};
 
 }  // namespace
 
-void PhysicsSystem::update(entt::registry& reg, float dt,
-                           entt::entity skipYConstraintFor) {
-    // ---- 1) Validate dt -------------------------------------------------
+void PhysicsSystem::update(entt::registry& reg, float dt) {
     if (!std::isfinite(dt) || dt <= 0.0f) return;
-    if (dt > 0.1f) dt = 0.1f;
+    dt = std::min(dt, 0.1f);
 
-    auto view = reg.view<PlayerTag, Transform, Velocity, RigidBody,
-                         CarInput, DerivedCarStats, Fuel>();
-    view.each([&](entt::entity e, Transform& tf, Velocity& vel, RigidBody& rb,
-                  const CarInput& rawInput,
-                  const DerivedCarStats& stats, const Fuel& fuel) {
+    // --- Collect fixed collidable geometry (ground plane, fixed boxes) ---
+    std::vector<CollidableRef> collidables;
+    collidables.reserve(16);
 
-        // ---- 2) Sanitize state -----------------------------------------
-        if (!finiteV(tf.position)) tf.position = glm::vec3(0.0f);
-        if (!finiteV(rb.linearVel)) rb.linearVel = glm::vec3(0.0f);
-        tf.rotation = extractYaw(tf.rotation);   // enforce pure-Y rotation
+    reg.view<Transform, RigidBody>().each(
+        [&](entt::entity e, const Transform& tf, const RigidBody& rb) {
+            if (!rb.fixed) return;
+            CollidableRef cr;
+            bool useful = false;
+            if (const auto* pc = reg.try_get<PlaneCollider>(e)) {
+                cr.planeNormal = &pc->normal;
+                cr.planeD      = pc->d;
+                useful = true;
+            }
+            if (const auto* bc = reg.try_get<BoxCollider>(e)) {
+                cr.boxCenter   = &tf.position;
+                cr.boxHalfExt  = &bc->halfExtents;
+                cr.boxRot      = &tf.rotation;
+                useful = true;
+            }
+            if (useful) collidables.push_back(cr);
+        });
 
-        const bool constrained = (e != skipYConstraintFor);
-        if (constrained) {
-            tf.position.y   = 0.0f;
-            rb.linearVel.y  = 0.0f;
-            rb.forceAccum.y = 0.0f;
+    // --- Per-vehicle update ----------------------------------------------
+    auto view = reg.view<PlayerTag, Transform, RigidBody, CarInput, CarVehicle>();
+    view.each([&](entt::entity e,
+                  Transform& tf, RigidBody& rb,
+                  const CarInput& rawInput, CarVehicle& cv) {
+
+        // 1. Smooth inputs (exponential ramp toward raw target).
+        const float kT = std::clamp(throttleResponse * dt, 0.0f, 1.0f);
+        const float kS = std::clamp(steerResponse    * dt, 0.0f, 1.0f);
+
+        float tgtThrottle = std::clamp(safeF(rawInput.throttle), 0.0f, 1.0f);
+        float tgtBrake    = std::clamp(safeF(rawInput.brake),    0.0f, 1.0f);
+        float tgtSteer    = std::clamp(safeF(rawInput.steer),   -1.0f, 1.0f);
+
+        // Kill throttle if fuel is empty (component is optional).
+        if (const auto* fuel = reg.try_get<Fuel>(e))
+            if (fuel->depleted()) tgtThrottle = 0.0f;
+
+        cv.appliedThrottle += (tgtThrottle - cv.appliedThrottle) * kT;
+        cv.appliedSteer    += (tgtSteer    - cv.appliedSteer)    * kS;
+        cv.appliedThrottle  = std::clamp(safeF(cv.appliedThrottle), 0.0f, 1.0f);
+        cv.appliedSteer     = std::clamp(safeF(cv.appliedSteer),   -1.0f, 1.0f);
+
+        const float topSpeed    = std::max(safeF(cv.topSpeed), 1.0f);
+        const glm::vec3 carFwd  = tf.rotation * glm::vec3(0.0f, 0.0f, -1.0f);
+        const float carSpeedFwd = safeF(glm::dot(carFwd, rb.linearVel));
+
+        // 2. Per-wheel suspension + grip + drive.
+        for (int i = 0; i < CarVehicle::kWheelCount; ++i) {
+            WheelState& wheel = cv.wheels[i];
+
+            // World-space spring direction and wheel attachment position.
+            const glm::vec3 worldUp       = tf.rotation * glm::vec3(0.0f, 1.0f, 0.0f);
+            const glm::vec3 worldWheelPos = tf.position + tf.rotation * wheel.localOffset;
+
+            // Ray from the top of suspension travel, firing downward.
+            const Ray   ray        { worldWheelPos + worldUp * wheel.suspensionTravel, -worldUp };
+            const float maxRayDist = wheel.suspensionRestDist + wheel.suspensionTravel;
+
+            // Find the closest hit among all fixed collidables.
+            RaycastHit bestHit;
+            for (const auto& cr : collidables) {
+                RaycastHit h;
+                if (cr.planeNormal)
+                    h = raycastPlane(ray, *cr.planeNormal, cr.planeD);
+                else if (cr.boxCenter)
+                    h = raycastBox(ray, *cr.boxCenter, *cr.boxHalfExt, *cr.boxRot);
+                if (h.hit && h.distance <= maxRayDist) {
+                    if (!bestHit.hit || h.distance < bestHit.distance)
+                        bestHit = h;
+                }
+            }
+
+            wheel.grounded = bestHit.hit;
+            if (!bestHit.hit) {
+                wheel.compressionRatio = 0.0f;
+                wheel.contactDist      = 0.0f;
+                continue;
+            }
+
+            wheel.contactDist      = bestHit.distance;
+            wheel.compressionRatio = std::clamp(
+                1.0f - (bestHit.distance - wheel.suspensionRestDist) / wheel.suspensionTravel,
+                0.0f, 1.0f);
+
+            const glm::vec3 tireWorldVel = rbGetPointVelocity(rb, tf, worldWheelPos);
+
+            // ---- a) Suspension spring-damper force ----------------------
+            const float offset     = wheel.suspensionRestDist - bestHit.distance;
+            const float velSpring  = glm::dot(worldUp, tireWorldVel);
+            const float maxSpringF = wheel.springStrength * wheel.suspensionTravel * 2.0f;
+            const float springForce = std::clamp(
+                offset * wheel.springStrength - velSpring * wheel.springDamper,
+                -maxSpringF, maxSpringF);
+            rbAddForceAtPosition(rb, tf, worldUp * springForce, worldWheelPos);
+
+            // ---- b) Lateral grip force ----------------------------------
+            // Steer the front wheels; rear wheels point straight.
+            // Negate: positive appliedSteer = right, but angleAxis(+θ, Y) rotates -Z toward -X (left).
+            const float steerAngle = wheel.isSteered ? -cv.appliedSteer * maxSteerAngleRad : 0.0f;
+            const glm::quat steerRot   = glm::angleAxis(steerAngle, worldUp);
+            const glm::vec3 wheelRight = steerRot * (tf.rotation * glm::vec3(1.0f, 0.0f, 0.0f));
+            const glm::vec3 wheelFwd   = steerRot * (tf.rotation * glm::vec3(0.0f, 0.0f, -1.0f));
+
+            float gripMul = wheel.gripFactor;
+            // Handbrake removes rear grip → oversteer / drift.
+            if (rawInput.handbrake && !wheel.isSteered) gripMul = 0.0f;
+
+            const float steeringVel  = glm::dot(wheelRight, tireWorldVel);
+            const float desiredAccel = (-steeringVel * gripMul) / dt;
+            rbAddForceAtPosition(rb, tf,
+                wheelRight * wheel.wheelMass * desiredAccel, worldWheelPos);
+
+            // ---- c) Drive / brake force ---------------------------------
+            if (!wheel.isDriven) continue;
+
+            // Forward drive — power curve scales torque down as speed rises.
+            if (cv.appliedThrottle > 0.001f) {
+                float normSpeed = std::clamp(std::fabs(carSpeedFwd) / topSpeed, 0.0f, 1.0f);
+                float torqueMul = std::max(0.0f, 1.0f - normSpeed);
+                rbAddForceAtPosition(rb, tf,
+                    wheelFwd * cv.maxTorque * torqueMul * cv.appliedThrottle,
+                    worldWheelPos);
+            }
+
+            // Service brake / reverse — apply backward force until max reverse speed.
+            // Braking while forward, then seamlessly transitions to reverse once stopped.
+            if (tgtBrake > 0.01f) {
+                const float maxReverseSpeed = topSpeed * 0.4f;
+                if (carSpeedFwd > -maxReverseSpeed) {
+                    const float brakeTorque = cv.maxTorque * 0.8f * tgtBrake;
+                    rbAddForceAtPosition(rb, tf, -wheelFwd * brakeTorque, worldWheelPos);
+                }
+            }
+
+            // Rolling resistance — always opposes forward motion (tire deformation drag).
+            // ~400 N total across 4 wheels gives 0.27 m/s² deceleration at any speed.
+            constexpr float kRolling = 100.0f;  // N per wheel
+            if (std::fabs(carSpeedFwd) > 0.05f) {
+                float dir = (carSpeedFwd > 0.0f) ? -1.0f : 1.0f;
+                rbAddForceAtPosition(rb, tf, wheelFwd * kRolling * dir, worldWheelPos);
+            }
+
+            // Engine braking when fully coasting — speed-proportional drag.
+            // kEngineBrake=2.5: at 10 m/s → 2000 N total (1.3 m/s² for 1500 kg car).
+            if (cv.appliedThrottle < 0.001f && tgtBrake < 0.01f) {
+                constexpr float kEngineBrake = 2.5f;
+                rbAddForceAtPosition(rb, tf,
+                    -wheelFwd * std::fabs(carSpeedFwd) * kEngineBrake * wheel.wheelMass,
+                    worldWheelPos);
+            }
         }
-        // Prevent roll and pitch — the car stays flat
-        rb.angularVel.x = 0.0f;
-        rb.angularVel.z = 0.0f;
 
-        // ---- 3) Smooth inputs ------------------------------------------
-        vel.appliedThrottle = std::clamp(safeF(vel.appliedThrottle), -1.0f, 1.0f);
-        vel.appliedSteer    = std::clamp(safeF(vel.appliedSteer),    -1.0f, 1.0f);
-
-        float tgtThrottle = std::clamp(safeF(rawInput.throttle), -1.0f, 1.0f);
-        float tgtSteer    = std::clamp(safeF(rawInput.steer),    -1.0f, 1.0f);
-        float tgtBrake    = std::clamp(safeF(rawInput.brake),     0.0f, 1.0f);
-        if (fuel.depleted()) tgtThrottle = 0.0f;
-
-        float kT = std::clamp(throttleResponse * dt, 0.0f, 1.0f);
-        float kS = std::clamp(steerResponse    * dt, 0.0f, 1.0f);
-        vel.appliedThrottle += (tgtThrottle - vel.appliedThrottle) * kT;
-        vel.appliedSteer    += (tgtSteer    - vel.appliedSteer)    * kS;
-        vel.appliedThrottle  = std::clamp(safeF(vel.appliedThrottle), -1.0f, 1.0f);
-        vel.appliedSteer     = std::clamp(safeF(vel.appliedSteer),    -1.0f, 1.0f);
-
-        // ---- 4) Car-local basis and velocity components -----------------
-        glm::vec3 forward = tf.rotation * glm::vec3(0.0f, 0.0f, -1.0f);
-        glm::vec3 right   = tf.rotation * glm::vec3(1.0f, 0.0f,  0.0f);
-        forward.y = 0.0f; right.y = 0.0f;
-        forward = safeNormalize(forward, glm::vec3(0.0f, 0.0f, -1.0f));
-        right   = safeNormalize(right,   glm::vec3(1.0f, 0.0f,  0.0f));
-
-        float vFwd = safeF(glm::dot(rb.linearVel, forward));
-        float vLat = safeF(glm::dot(rb.linearVel, right));
-
-        // ---- 5) Longitudinal force (drive + engine-brake + service-brake) --
-        float topSpd = std::max(safeF(stats.topSpeed, 30.0f), 1.0f);
-        float power  = std::max(safeF(stats.power,   100.0f), 1.0f);
-        float handle = std::clamp(safeF(stats.handling, 1.0f), 0.1f, 5.0f);
-        float vMaxFwd = topSpd;
-        float vMaxRev = std::max(topSpd * reverseSpeedMul, 1.0f);
-
-        float t = vel.appliedThrottle;
-        float accel = 0.0f;
-
-        if (t > 0.01f) {
-            // Forward: headroom shrinks as we approach top speed
-            float head = std::max(0.0f, 1.0f - vFwd / vMaxFwd);
-            accel += t * power * powerScale * head;
-        } else if (t < -0.01f) {
-            // Reverse
-            float head = std::max(0.0f, 1.0f - (-vFwd) / vMaxRev);
-            accel += t * power * powerScale * reversePowerMul * head;
-        } else {
-            // Coast — engine braking
-            accel -= engineBrake * vFwd;
+        // 3. Sync Velocity component for HUD / camera.
+        if (auto* vel = reg.try_get<Velocity>(e)) {
+            vel->linear          = rb.linearVel;
+            vel->appliedThrottle = cv.appliedThrottle;
+            vel->appliedSteer    = cv.appliedSteer;
         }
-
-        if (tgtBrake > 0.01f) {
-            float bForce = brakeSensitivity * tgtBrake;
-            if      (vFwd >  0.05f) accel -= bForce;
-            else if (vFwd < -0.05f) accel += bForce;
-        }
-        accel = std::clamp(safeF(accel), -maxAccel, maxAccel);
-
-        // Accumulate as force on the rigid body (F = m·a)
-        rb.forceAccum += forward * (accel * rb.mass);
-
-        // ---- 6) Rolling drag + handbrake drag ---------------------------
-        float fwdDrag = drag + (rawInput.handbrake ? handbrakeDrag : 0.0f);
-        rb.forceAccum -= forward * (vFwd * fwdDrag * rb.mass);
-
-        // ---- 7) Lateral grip force (cancels sideways sliding) -----------
-        float latGrip = lateralFriction * (rawInput.handbrake ? handbrakeGripMul : 1.0f);
-        // This force zeroes out vLat over ~(1/latGrip) seconds.
-        rb.forceAccum -= right * (vLat * latGrip * rb.mass);
-
-        // ---- 8) Bicycle-model steering → set angular velocity directly --
-        float delta    = vel.appliedSteer * maxSteerAngleRad;
-        float L        = std::max(wheelbase, 0.5f);
-        float vForBike = (vFwd >= 0.0f) ? vFwd : vFwd * 0.7f;
-        float yawRate  = -(vForBike / L) * std::tan(delta) * handle;
-
-        if (std::abs(vel.appliedSteer) > 0.01f) {
-            float blend = std::clamp(
-                1.0f - std::abs(vFwd) / std::max(pivotMinSpeed, 0.1f), 0.0f, 1.0f);
-            float pivotSign = (vFwd >= 0.0f) ? 1.0f : -1.0f;
-            float pivot = -vel.appliedSteer * pivotYawRate * handle * pivotSign;
-            yawRate = yawRate * (1.0f - blend) + pivot * blend;
-        }
-        yawRate = std::clamp(safeF(yawRate), -6.0f, 6.0f);
-
-        // RigidBodySystem will integrate angularVel → quaternion rotation.
-        rb.angularVel.y = yawRate;
-
-        // ---- 9) Sync Velocity component (used by HUD + camera) ----------
-        vel.linear   = rb.linearVel;
-        vel.angularY = glm::degrees(yawRate);
     });
 }
