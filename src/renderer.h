@@ -56,6 +56,8 @@ private:
     GLuint  cylinderIbo_        = 0;
     GLsizei cylinderIndexCount_ = 0;
 
+    GLuint  fallbackTex_        = 0;  // 1×1 white texture bound when submesh has no diffuse
+
     void createGroundMesh();
     void createCubeMesh();
     void createSphereMesh();

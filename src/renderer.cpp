@@ -176,6 +176,17 @@ bool Renderer::init() {
     createCubeMesh();
     createSphereMesh();
     createCylinderMesh();
+
+    // 1×1 opaque white texture used as a safe fallback when a submesh has no diffuse texture.
+    // Prevents the macOS GL validator from complaining about an unloaded sampler unit.
+    static const uint8_t kWhite[4] = {255, 255, 255, 255};
+    glGenTextures(1, &fallbackTex_);
+    glBindTexture(GL_TEXTURE_2D, fallbackTex_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, kWhite);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
     return true;
 }
 
@@ -407,7 +418,7 @@ GLuint Renderer::render(entt::registry& reg, const Scene& scene) {
                 setFloat("uHasTexture", 1.0f);
             } else {
                 glActiveTexture(GL_TEXTURE0);
-                glBindTexture(GL_TEXTURE_2D, 0);
+                glBindTexture(GL_TEXTURE_2D, fallbackTex_);
                 setFloat("uHasTexture", 0.0f);
                 GLint lc = glGetUniformLocation(mm.modelShaderProgram, "uDiffuseColor");
                 if (lc >= 0) glUniform4f(lc,
@@ -451,6 +462,7 @@ void Renderer::destroy() {
     if (sphereVao_)   { glDeleteVertexArrays(1, &sphereVao_);   sphereVao_   = 0; }
     if (cylinderVao_) { glDeleteVertexArrays(1, &cylinderVao_); cylinderVao_ = 0; }
 #endif
+    if (fallbackTex_) { glDeleteTextures(1, &fallbackTex_); fallbackTex_ = 0; }
 }
 
 Renderer::~Renderer() {
