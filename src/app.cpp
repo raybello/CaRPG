@@ -522,7 +522,9 @@ void App::drawPanel() {
             }
 
             if (dl.type == LightType::Directional || dl.type == LightType::Spot) {
-                ImGui::SliderFloat3("Direction", &dl.direction.x, -1.0f, 1.0f);
+                ImGui::TextDisabled("Direction (driven by Rotate gizmo)");
+                ImGui::Text("  %.2f, %.2f, %.2f",
+                            dl.direction.x, dl.direction.y, dl.direction.z);
             }
             if (dl.type == LightType::Spot) {
                 ImGui::SliderFloat("Spot Cutoff (deg)", &dl.spotCutoff, 1.0f, 89.0f);
@@ -918,11 +920,14 @@ bool App::frame() {
     // updated inside it while physics/camera are still gated on !IsUsing.
     if (gameRunning_) tickSystems(dt);
 
-    // --- Sync light sphere color from its DirectionalLight component ---
+    // --- Sync light sphere: color from DirectionalLight, direction from rotation ---
     if (registry_.valid(lightEntity_)) {
         auto& dl  = registry_.get<DirectionalLight>(lightEntity_);
         auto& mat = registry_.get<Material>(lightEntity_);
         mat.color = dl.color;
+        // Rotation drives direction: the light shines along the entity's -Z axis.
+        if (auto* tf = registry_.try_get<Transform>(lightEntity_))
+            dl.direction = glm::normalize(tf->rotation * glm::vec3(0.0f, 0.0f, -1.0f));
     }
 
     // --- ImGui frame ---
