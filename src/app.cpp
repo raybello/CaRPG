@@ -98,6 +98,7 @@ bool App::initScene() {
     if (!scene_.initDefaultShaders())
         std::fprintf(stderr, "WARNING: object shader failed on init\n");
     renderer_.resize(800, 600);
+    hud_.init(800, 600);
 
     if (!ItemCatalog::loadFromFile("LOOT.json"))
         std::fprintf(stderr, "WARNING: LOOT.json failed to load\n");
@@ -428,9 +429,9 @@ void App::connectEventListeners() {
     dispatcher_.sink<GearUnequippedEvent>()
         .connect<&StatSystem::onGearUnequipped>(statSys_);
     dispatcher_.sink<LowFuelEvent>()
-        .connect<&HUD::onLowFuel>(hud_);
+        .connect<&HudTexture::onLowFuel>(hud_);
     dispatcher_.sink<FuelDepletedEvent>()
-        .connect<&HUD::onFuelDepleted>(hud_);
+        .connect<&HudTexture::onFuelDepleted>(hud_);
     dispatcher_.sink<ItemPickedUpEvent>()
         .connect<&InventoryPanel::onItemPickedUp>(inventoryPanel_);
     dispatcher_.sink<GearEquippedEvent>()
@@ -472,7 +473,6 @@ void App::tickSystems(float dt) {
 
 void App::drawGameUI() {
     inventoryPanel_.draw(registry_, playerEntity_, itemSys_, dispatcher_);
-    hud_.draw(registry_, playerEntity_, vpW_, vpH_);
 }
 
 void App::syncShaderProgramsToRegistry() {
@@ -1102,6 +1102,19 @@ bool App::frame() {
                 gizmoOperation_ = ImGuizmo::SCALE;
             if (e.key.keysym.sym == SDLK_s)
                 useGizmoSnap_ = !useGizmoSnap_;
+            if (e.key.keysym.sym == SDLK_q && registry_.valid(playerEntity_)) {
+                auto& tf = registry_.get<Transform>(playerEntity_);
+                tf.position = glm::vec3(0.0f, 0.6f, 0.0f);
+                tf.rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+                if (auto* rb = registry_.try_get<RigidBody>(playerEntity_)) {
+                    rb->linearVel  = glm::vec3(0.0f);
+                    rb->angularVel = glm::vec3(0.0f);
+                    rb->forceAccum  = glm::vec3(0.0f);
+                    rb->torqueAccum = glm::vec3(0.0f);
+                }
+                if (auto* vel = registry_.try_get<Velocity>(playerEntity_))
+                    *vel = Velocity{};
+            }
         }
     }
 
@@ -1109,6 +1122,7 @@ bool App::frame() {
     // tickSystems always runs when gameRunning; input is unconditionally
     // updated inside it while physics/camera are still gated on !IsUsing.
     if (gameRunning_) tickSystems(dt);
+    hud_.update(registry_, playerEntity_, dt);
 
     // --- Sync light sphere: color from DirectionalLight, direction from rotation ---
     if (registry_.valid(lightEntity_)) {
@@ -1147,6 +1161,7 @@ bool App::frame() {
         vpW_ = (int)sz.x; if (vpW_ < 1) vpW_ = 1;
         vpH_ = (int)sz.y; if (vpH_ < 1) vpH_ = 1;
         renderer_.resize(vpW_, vpH_);
+        hud_.resize(vpW_, vpH_);
 
         GLuint tex = renderSys_.render(registry_, renderer_, scene_);
         // Capture the image's screen-space position so the gizmo overlay
@@ -1157,6 +1172,13 @@ bool App::frame() {
         ImGui::Image((ImTextureID)(intptr_t)tex,
                      ImVec2((float)vpW_, (float)vpH_),
                      ImVec2(0, 1), ImVec2(1, 0));
+
+        // HUD overlay — alpha-blended, always on top of the 3D viewport
+        ImGui::GetWindowDrawList()->AddImage(
+            (ImTextureID)(intptr_t)hud_.texture(),
+            imgPos,
+            ImVec2(imgPos.x + (float)vpW_, imgPos.y + (float)vpH_),
+            ImVec2(0, 0), ImVec2(1, 1));
 
         // Mouse picking: left-click in the viewport selects the entity under
         // the cursor.  Skip when the gizmo is being manipulated.

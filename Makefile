@@ -40,7 +40,7 @@ APP_SRCS := \
     $(SRC_DIR)/systems/item_system.cpp \
     $(SRC_DIR)/systems/camera_system.cpp \
     $(SRC_DIR)/systems/render_system.cpp \
-    $(SRC_DIR)/ui/hud.cpp \
+    $(SRC_DIR)/ui/hud_texture.cpp \
     $(SRC_DIR)/ui/inventory_panel.cpp
 
 IMGUI_SRCS := \

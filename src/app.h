@@ -17,7 +17,7 @@ typedef void* SDL_GLContext;
 #include "systems/item_system.h"
 #include "systems/camera_system.h"
 #include "systems/render_system.h"
-#include "ui/hud.h"
+#include "ui/hud_texture.h"
 #include "ui/inventory_panel.h"
 #include "imgui.h"
 #include "ImGuizmo.h"
@@ -82,7 +82,7 @@ private:
     RenderSystem   renderSys_;
 
     // UI
-    HUD            hud_;
+    HudTexture     hud_;
     InventoryPanel inventoryPanel_;
     bool           gameRunning_ = true;
 
