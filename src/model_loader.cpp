@@ -1,5 +1,12 @@
 #include "model_loader.h"
 
+#ifdef __EMSCRIPTEN__
+
+ModelMesh loadModel(const std::string&) { return {}; }
+void destroyModelMesh(ModelMesh& mm) { mm.submeshes.clear(); }
+
+#else
+
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
@@ -235,3 +242,5 @@ void destroyModelMesh(ModelMesh& mm) {
     }
     mm.submeshes.clear();
 }
+
+#endif // !__EMSCRIPTEN__

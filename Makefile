@@ -92,14 +92,15 @@ endif
 NATIVE_OBJS := $(patsubst %.cpp,$(NATIVE_OBJ_DIR)/%.o,$(ALL_SRCS))
 
 # ---------- web target (emscripten) ----------
-WEB_DIR        := web
-WEB_OBJ_DIR    := $(WEB_DIR)/obj
+WEB_DIR        := docs
+WEB_OBJ_DIR    := build/web-obj
 WEB_OUT        := $(WEB_DIR)/index.html
 WEB_CXX        := em++
-WEB_EMS        := -s USE_SDL=2 -s DISABLE_EXCEPTION_CATCHING=1 -DIMGUI_IMPL_OPENGL_ES2
+WEB_EMS        := -s USE_SDL=2 -s DISABLE_EXCEPTION_CATCHING=1 -DIMGUI_IMPL_OPENGL_ES3
 WEB_CXXFLAGS   := $(COMMON_CXXFLAGS) -Os $(WEB_EMS)
 WEB_LDFLAGS    := -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 -s NO_EXIT_RUNTIME=0 \
                   -s ASSERTIONS=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
+                  -s USE_WEBGL2=1 -s MIN_WEBGL_VERSION=2 \
                   $(WEB_EMS) \
                   --shell-file $(IMGUI_DIR)/examples/libs/emscripten/shell_minimal.html
 
@@ -149,7 +150,7 @@ clean-native:
 	rm -rf $(NATIVE_BUILD_DIR)
 
 clean-web:
-	rm -rf $(WEB_DIR)/obj $(WEB_DIR)/index.html $(WEB_DIR)/index.js $(WEB_DIR)/index.wasm $(WEB_DIR)/index.data
+	rm -rf $(WEB_OBJ_DIR) $(WEB_DIR)/index.html $(WEB_DIR)/index.js $(WEB_DIR)/index.wasm $(WEB_DIR)/index.data
 
 help:
 	@echo "Targets:"

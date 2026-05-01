@@ -15,7 +15,7 @@
 #if defined(__EMSCRIPTEN__)
 #  include <emscripten.h>
 #  include <emscripten/html5.h>
-#  include <SDL_opengles2.h>
+#  include <GLES3/gl3.h>
 #endif
 
 #include "imgui.h"
@@ -40,12 +40,12 @@ bool App::initWindow() {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE,   24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE,  8);
 
-#if defined(IMGUI_IMPL_OPENGL_ES2) || defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
-    const char* glslVersion = "#version 100";
+    const char* glslVersion = "#version 300 es";
 #elif defined(__APPLE__)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);

@@ -5,7 +5,7 @@
 #include <string>
 
 #if defined(__EMSCRIPTEN__)
-#  include <GLES2/gl2.h>
+#  include <GLES3/gl3.h>
 #elif defined(__APPLE__)
 // <OpenGL/gl3.h> exposes the full OpenGL 3.x core profile including all
 // GL 2.0 symbols (glDeleteProgram, glUniform3f, glUniformMatrix4fv, …).

@@ -6,7 +6,10 @@
       "Bash(git add *)",
       "Bash(git checkout *)",
       "Bash(git commit -m ' *)",
-      "Bash(timeout 5 ./build/web3d)"
+      "Bash(timeout 5 ./build/web3d)",
+      "Bash(brew install *)",
+      "Bash(make clean-web *)",
+      "Bash(make web *)"
     ]
   }
 }
