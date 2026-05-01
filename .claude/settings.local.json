@@ -3,7 +3,9 @@
     "allow": [
       "Bash(make)",
       "Bash(make -C /Users/ray/Documents/Claude/Projects/rve-master/.claude/worktrees/quirky-haslett-eb04e7)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git checkout *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }
