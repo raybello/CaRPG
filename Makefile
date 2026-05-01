@@ -14,6 +14,8 @@
 #   WEB=1                # force-build the web target via the default rule
 # =====================================================================
 
+MAKEFLAGS += -j8
+
 # ---------- common config ----------
 APP        := web3d
 SRC_DIR    := src

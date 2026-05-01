@@ -192,6 +192,7 @@ void App::initGameEntities() {
     {
         Transform tf;
         tf.position = glm::vec3(2.0f, 3.0f, 2.0f);
+        tf.rotation = glm::quat(glm::vec3(-45.0f, 45.0f, 0.0f)); // point toward world origin
         tf.scale    = glm::vec3(0.3f);
         registry_.emplace<Transform>(lightEntity_, tf);
     }
