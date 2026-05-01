@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
+#include <limits>
 #include <string>
 #include "ecs/components.h"
 #include "game/item_catalog.h"
@@ -134,13 +135,15 @@ void App::initGameEntities() {
         registry_.emplace<BoxCollider>(playerEntity_, bc);
 
         RigidBody rb;
-        rb.mass            = 1500.0f;     // arcade car mass
-        rb.inverseMass     = 0.0f;        // kinematic → no impulse pushback
-        rb.kinematic       = true;
-        rb.useGravity      = false;
-        rb.invInertiaLocal = glm::mat3(0.0f);
+        rb.mass            = 1500.0f;
+        rb.inverseMass     = 1.0f / 1500.0f;  // dynamic — forces affect it
+        rb.kinematic       = false;
+        rb.useGravity      = false;            // gravity handled via Y constraint
+        rb.invInertiaLocal = RigidBodySystem::boxInvInertia(1500.0f, bc.halfExtents);
         rb.restitution     = 0.15f;
         rb.friction        = 0.7f;
+        rb.linearDamping   = 0.0f;            // PhysicsSystem applies drag directly
+        rb.angularDamping  = 0.98f;           // high: prevent uncontrolled spinning
         registry_.emplace<RigidBody>(playerEntity_, rb);
     }
 
@@ -149,6 +152,14 @@ void App::initGameEntities() {
     registry_.emplace<CameraTag>(cameraEcsEntity_);
     registry_.emplace<CameraState>(cameraEcsEntity_);
     registry_.emplace<CameraFollow>(cameraEcsEntity_, playerEntity_);
+    {
+        // Give the camera a Transform so the gizmo can manipulate it.
+        // CameraSystem syncs cam.position→Transform each frame when follow is active;
+        // when follow is disabled the Transform acts as the authoritative position.
+        Transform camTf;
+        camTf.position = glm::vec3(0.0f, 5.0f, 15.0f);
+        registry_.emplace<Transform>(cameraEcsEntity_, camTf);
+    }
 
     // --- Ground ---
     auto ground = registry_.create();
@@ -252,24 +263,36 @@ void App::connectEventListeners() {
 // Per-frame systems
 // ---------------------------------------------------------------------------
 void App::tickSystems(float dt) {
+    // Input is always polled — decoupled from the gizmo gate so the car
+    // responds immediately when the gizmo is released.
     const uint8_t* keys = SDL_GetKeyboardState(nullptr);
     inputSys_.update(registry_, keys);
+
+    // Physics / simulation are still paused while the gizmo is being dragged
+    // so it can reposition entities without fighting the simulation.
+    if (ImGuizmo::IsUsing()) return;
+
     statSys_.update(registry_);
-    physicsSys_.update(registry_, dt);
 
-    // Bridge the kinematic car into the rigid body world: copy its current
-    // world-space velocity onto its RigidBody so collisions transfer momentum
-    // into items the car bumps. The car itself is kinematic (inverseMass=0)
-    // so the rigid body system never moves it back.
-    if (registry_.valid(playerEntity_) &&
-        registry_.all_of<Velocity, RigidBody>(playerEntity_)) {
-        const auto& v  = registry_.get<Velocity>(playerEntity_);
-        auto&       rb = registry_.get<RigidBody>(playerEntity_);
-        rb.linearVel  = v.linear;
-        rb.angularVel = glm::vec3(0.0f, glm::radians(v.angularY), 0.0f);
-    }
+    // PhysicsSystem applies drive/lateral forces to the player's RigidBody
+    // and sets rb.angularVel.y. Pass the player entity when the gizmo just
+    // moved it so the Y=0 ground-lock is skipped for that one frame.
+    entt::entity skipY = playerGizmoMoved_ ? playerEntity_ : entt::entity{entt::null};
+    physicsSys_.update(registry_, dt, skipY);
+    playerGizmoMoved_ = false;
 
+    // RigidBodySystem integrates forceAccum/angularVel → velocity → position
+    // for all dynamic entities including the player.
     rigidBodySys_.update(registry_, dt);
+
+    // Re-enforce the Y=0 ground plane for the player after RigidBodySystem
+    // may have nudged tf.position.y slightly during integration.
+    if (registry_.valid(playerEntity_) && skipY == entt::entity{entt::null}) {
+        auto* tf = registry_.try_get<Transform>(playerEntity_);
+        auto* rb = registry_.try_get<RigidBody>(playerEntity_);
+        if (tf) tf->position.y = 0.0f;
+        if (rb) { rb->linearVel.y = 0.0f; rb->forceAccum.y = 0.0f; }
+    }
 
     fuelSys_.update(registry_, dispatcher_, dt);
     itemSys_.update(registry_, dispatcher_, dt);
@@ -423,20 +446,37 @@ void App::drawPanel() {
             ImGui::TextDisabled("(select an entity above)");
         }
         else if (selectedEntity_ == cameraEcsEntity_) {
-            // Camera — show live state
-            ImGui::TextDisabled("Chase Camera");
-            auto* cam = registry_.try_get<CameraState>(cameraEcsEntity_);
+            auto* cam    = registry_.try_get<CameraState>(cameraEcsEntity_);
+            auto* follow = registry_.try_get<CameraFollow>(cameraEcsEntity_);
+
+            if (follow && !follow->enabled) {
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "Free-look (gizmo override)");
+                if (ImGui::Button("Resume Follow Car")) {
+                    follow->enabled = true;
+                    follow->target  = playerEntity_;
+                }
+                ImGui::Separator();
+                // Show gizmo op selector (translate / rotate only)
+                if (ImGui::RadioButton("Translate", gizmoOperation_ == ImGuizmo::TRANSLATE))
+                    gizmoOperation_ = ImGuizmo::TRANSLATE;
+                ImGui::SameLine();
+                if (ImGui::RadioButton("Rotate", gizmoOperation_ == ImGuizmo::ROTATE))
+                    gizmoOperation_ = ImGuizmo::ROTATE;
+            } else {
+                ImGui::TextDisabled("Chase Camera");
+                ImGui::TextDisabled("Gizmo translate/rotate to enter free-look");
+            }
+
             if (cam) {
                 ImGui::SliderFloat("FOV (deg)", &cam->fovDeg, 10.0f, 120.0f);
-                ImGui::TextDisabled("Position (follows car)");
+                ImGui::TextDisabled("Position");
                 ImGui::Text("  %.2f, %.2f, %.2f",
                             cam->position.x, cam->position.y, cam->position.z);
-                ImGui::TextDisabled("Forward (car direction)");
+                ImGui::TextDisabled("Forward");
                 ImGui::Text("  %.2f, %.2f, %.2f",
                             cam->forward.x, cam->forward.y, cam->forward.z);
             }
-            auto* follow = registry_.try_get<CameraFollow>(cameraEcsEntity_);
-            if (follow) {
+            if (follow && follow->enabled) {
                 ImGui::Separator();
                 ImGui::TextDisabled("Follow offset");
                 ImGui::SliderFloat("Height",   &follow->offset.y, 0.5f, 20.0f);
@@ -456,8 +496,30 @@ void App::drawPanel() {
             dl.type = (LightType)typeIdx;
 
             ImGui::Separator();
-            ImGui::ColorEdit3("Color",     &dl.color.x);
-            ImGui::SliderFloat3("Position",&dl.position.x, -20.0f, 20.0f);
+            ImGui::ColorEdit3("Color", &dl.color.x);
+
+            // Gizmo controls — translate/rotate only (same as generic entities)
+            if (ImGui::RadioButton("Translate", gizmoOperation_ == ImGuizmo::TRANSLATE))
+                gizmoOperation_ = ImGuizmo::TRANSLATE;
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Rotate", gizmoOperation_ == ImGuizmo::ROTATE))
+                gizmoOperation_ = ImGuizmo::ROTATE;
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Local", gizmoMode_ == ImGuizmo::LOCAL))
+                gizmoMode_ = ImGuizmo::LOCAL;
+            ImGui::SameLine();
+            if (ImGui::RadioButton("World", gizmoMode_ == ImGuizmo::WORLD))
+                gizmoMode_ = ImGuizmo::WORLD;
+            ImGui::SameLine();
+            ImGui::Checkbox("Snap", &useGizmoSnap_);
+
+            // Transform is the source of truth for position; sync to DirectionalLight.
+            if (auto* tf = registry_.try_get<Transform>(selectedEntity_)) {
+                if (ImGui::SliderFloat3("Position", &tf->position.x, -50.0f, 50.0f))
+                    dl.position = tf->position;
+                else
+                    dl.position = tf->position;  // keep in sync after gizmo moves
+            }
 
             if (dl.type == LightType::Directional || dl.type == LightType::Spot) {
                 ImGui::SliderFloat3("Direction", &dl.direction.x, -1.0f, 1.0f);
@@ -465,10 +527,6 @@ void App::drawPanel() {
             if (dl.type == LightType::Spot) {
                 ImGui::SliderFloat("Spot Cutoff (deg)", &dl.spotCutoff, 1.0f, 89.0f);
             }
-
-            // Keep light Transform position in sync with DirectionalLight.position
-            if (auto* tf = registry_.try_get<Transform>(selectedEntity_))
-                tf->position = dl.position;
         }
         else {
             // Generic mesh entity: Transform + Material
@@ -682,6 +740,69 @@ void App::drawShaderPopup() {
 }
 
 // ---------------------------------------------------------------------------
+// Viewport mouse picking — ray-AABB intersection in world space
+// ---------------------------------------------------------------------------
+entt::entity App::pickEntity(float vpX, float vpY) const {
+    auto* cam = registry_.try_get<CameraState>(cameraEcsEntity_);
+    if (!cam || vpW_ < 1 || vpH_ < 1) return entt::null;
+
+    // NDC in [-1,1] × [-1,1], Y flipped because viewport Y grows downward.
+    float ndcX =  (2.0f * vpX / (float)vpW_) - 1.0f;
+    float ndcY = -(2.0f * vpY / (float)vpH_) + 1.0f;
+
+    glm::mat4 invVP = glm::inverse(cam->proj * cam->view);
+    glm::vec4 nearH = invVP * glm::vec4(ndcX, ndcY, -1.0f, 1.0f);
+    glm::vec4 farH  = invVP * glm::vec4(ndcX, ndcY,  1.0f, 1.0f);
+    nearH /= nearH.w;
+    farH  /= farH.w;
+
+    glm::vec3 rayOrig = glm::vec3(nearH);
+    glm::vec3 rayDir  = glm::normalize(glm::vec3(farH) - rayOrig);
+
+    // Ray-AABB slab test (world-space, axis-aligned).
+    auto testAABB = [&](const glm::vec3& boxMin, const glm::vec3& boxMax, float& tHit) -> bool {
+        glm::vec3 invD = 1.0f / rayDir;
+        glm::vec3 t0   = (boxMin - rayOrig) * invD;
+        glm::vec3 t1   = (boxMax - rayOrig) * invD;
+        glm::vec3 tNear = glm::min(t0, t1);
+        glm::vec3 tFar  = glm::max(t0, t1);
+        float tMin = std::max({tNear.x, tNear.y, tNear.z});
+        float tMax = std::min({tFar.x,  tFar.y,  tFar.z});
+        if (tMax < tMin || tMax < 0.0f) return false;
+        tHit = (tMin >= 0.0f) ? tMin : tMax;
+        return true;
+    };
+
+    entt::entity closest = entt::null;
+    float       bestT    = std::numeric_limits<float>::max();
+
+    registry_.view<Transform, MeshRef>().each(
+        [&](entt::entity e, const Transform& tf, const MeshRef& mr) {
+            // The ground mesh has a 50×50 world-unit footprint; the camera
+            // sits inside its XZ AABB so its slab entry appears very close.
+            // Skip it — it's not a meaningful pick target.
+            if (mr.meshId == MeshId::Ground) return;
+
+            // Use BoxCollider half-extents when available; fall back to half-scale.
+            glm::vec3 half;
+            const auto* bc = registry_.try_get<BoxCollider>(e);
+            if (bc) half = bc->halfExtents * glm::abs(tf.scale);
+            else    half = glm::abs(tf.scale) * 0.5f;
+
+            glm::vec3 boxMin = tf.position - half;
+            glm::vec3 boxMax = tf.position + half;
+
+            float t;
+            if (testAABB(boxMin, boxMax, t) && t < bestT) {
+                bestT   = t;
+                closest = e;
+            }
+        });
+
+    return closest;
+}
+
+// ---------------------------------------------------------------------------
 // UI: ImGuizmo for selected entity transform
 // ---------------------------------------------------------------------------
 void App::drawGizmo() {
@@ -691,6 +812,13 @@ void App::drawGizmo() {
 
     auto* cam = registry_.try_get<CameraState>(cameraEcsEntity_);
     if (!cam) return;
+
+    const bool isCameraSelected = (selectedEntity_ == cameraEcsEntity_);
+
+    // For the camera, only allow translate and rotate (scale makes no sense).
+    ImGuizmo::OPERATION op = gizmoOperation_;
+    if (isCameraSelected && op == ImGuizmo::SCALE)
+        op = ImGuizmo::TRANSLATE;
 
     // GLM and ImGuizmo both use column-major matrix layout, so we can pass
     // glm matrices directly via value_ptr — no transpose needed.
@@ -704,7 +832,7 @@ void App::drawGizmo() {
 
     float snap[3] = {0.0f, 0.0f, 0.0f};
     if (useGizmoSnap_) {
-        switch (gizmoOperation_) {
+        switch (op) {
             case ImGuizmo::TRANSLATE: snap[0] = snap[1] = snap[2] = 0.5f; break;
             case ImGuizmo::ROTATE:    snap[0] = 15.0f; break;
             case ImGuizmo::SCALE:     snap[0] = 0.25f; break;
@@ -714,7 +842,7 @@ void App::drawGizmo() {
 
     bool used = ImGuizmo::Manipulate(glm::value_ptr(cam->view),
                                      glm::value_ptr(cam->proj),
-                                     gizmoOperation_, gizmoMode_,
+                                     op, gizmoMode_,
                                      matrix, nullptr,
                                      useGizmoSnap_ ? snap : nullptr);
     if (used) {
@@ -725,6 +853,25 @@ void App::drawGizmo() {
         tf->position = glm::vec3(t[0], t[1], t[2]);
         tf->rotation = glm::quat(glm::radians(glm::vec3(r[0], r[1], r[2])));
         tf->scale    = glm::vec3(s[0], s[1], s[2]);
+
+        if (isCameraSelected) {
+            // Sync camera state directly so the view matrix updates this frame.
+            // Also detach from the car so CameraSystem doesn't fight the gizmo.
+            cam->position = tf->position;
+            cam->forward  = glm::normalize(tf->rotation * glm::vec3(0.0f, 0.0f, -1.0f));
+            glm::vec3 lookAt = cam->position + cam->forward;
+            cam->view = glm::lookAt(cam->position, lookAt, glm::vec3(0.0f, 1.0f, 0.0f));
+
+            auto* follow = registry_.try_get<CameraFollow>(cameraEcsEntity_);
+            if (follow) follow->enabled = false;
+        } else if (selectedEntity_ == playerEntity_) {
+            // Signal physics to skip the Y=0 ground-lock for one frame so
+            // the gizmo-placed position survives the first simulation tick.
+            playerGizmoMoved_ = true;
+        } else if (auto* dl = registry_.try_get<DirectionalLight>(selectedEntity_)) {
+            // Keep DirectionalLight.position in sync with the gizmo-moved Transform.
+            dl->position = tf->position;
+        }
     }
 }
 
@@ -749,6 +896,8 @@ bool App::frame() {
             running_ = false;
 
         if (e.type == SDL_KEYDOWN && !ImGui::GetIO().WantTextInput) {
+            if (e.key.keysym.sym == SDLK_ESCAPE)
+                selectedEntity_ = entt::null;
             if (e.key.keysym.sym == SDLK_p)
                 showPanel_ = !showPanel_;
             if (e.key.keysym.sym == SDLK_i)
@@ -765,7 +914,9 @@ bool App::frame() {
     }
 
     // --- Tick game ---
-    if (gameRunning_ && !ImGuizmo::IsUsing()) tickSystems(dt);
+    // tickSystems always runs when gameRunning; input is unconditionally
+    // updated inside it while physics/camera are still gated on !IsUsing.
+    if (gameRunning_) tickSystems(dt);
 
     // --- Sync light sphere color from its DirectionalLight component ---
     if (registry_.valid(lightEntity_)) {
@@ -811,6 +962,20 @@ bool App::frame() {
         ImGui::Image((ImTextureID)(intptr_t)tex,
                      ImVec2((float)vpW_, (float)vpH_),
                      ImVec2(0, 1), ImVec2(1, 0));
+
+        // Mouse picking: left-click in the viewport selects the entity under
+        // the cursor.  Skip when the gizmo is being manipulated.
+        if (ImGui::IsItemHovered() &&
+            ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+            !ImGuizmo::IsOver()) {
+            ImVec2 mouse  = ImGui::GetMousePos();
+            float  vpRelX = mouse.x - vpScreenX_;
+            float  vpRelY = mouse.y - vpScreenY_;
+            entt::entity hit = pickEntity(vpRelX, vpRelY);
+            if (hit != entt::null)
+                selectedEntity_ = hit;
+        }
+
         ImGuizmo::SetAlternativeWindow(ImGui::GetCurrentContext() ? ImGui::FindWindowByName("Viewport##bg") : nullptr);
         ImGui::End();
     }

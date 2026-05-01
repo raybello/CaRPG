@@ -86,6 +86,9 @@ private:
     InventoryPanel inventoryPanel_;
     bool           gameRunning_ = true;
 
+    // Tracks when the gizmo last moved the player so physics skips Y reset that frame
+    bool playerGizmoMoved_ = false;
+
     // Viewport size
     int vpW_ = 800;
     int vpH_ = 600;
@@ -116,6 +119,10 @@ private:
 
     // Entity display name (for the panel list)
     std::string entityDisplayName(entt::entity e) const;
+
+    // Viewport mouse-pick: returns the closest entity under the given
+    // viewport-relative pixel coordinate, or entt::null if nothing hit.
+    entt::entity pickEntity(float vpX, float vpY) const;
 
     static void mainLoopThunk(void* userdata);
 };

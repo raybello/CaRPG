@@ -235,6 +235,7 @@ struct CameraFollow {
     entt::entity target    = entt::null;
     glm::vec3    offset    {0.0f, 4.0f, 10.0f};
     float        lag       = 5.0f;
+    bool         enabled   = true;   // false = free-look / gizmo override
 };
 
 struct CameraState {

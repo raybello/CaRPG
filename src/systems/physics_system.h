@@ -6,7 +6,8 @@
 // feel with gradual ramps.
 class PhysicsSystem {
 public:
-    void update(entt::registry& reg, float dt);
+    void update(entt::registry& reg, float dt,
+                entt::entity skipYConstraintFor = entt::null);
 
     // ---- Throttle / power ------------------------------------------------
     float powerScale       = 0.35f;   // global throttle→force scale
