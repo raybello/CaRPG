@@ -15,7 +15,7 @@ void InventoryPanel::draw(entt::registry& reg, entt::entity player,
     auto* inv = reg.try_get<Inventory>(player);
     if (!inv) return;
 
-    ImGui::SetNextWindowSize(ImVec2(320.0f, 360.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(332.0f, 393.0f), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2(400.0f, 10.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Inventory  [i]", &visible)) {
         ImGui::End();
@@ -55,6 +55,7 @@ void InventoryPanel::draw(entt::registry& reg, entt::entity player,
         else
             snprintf(label, sizeof(label), "---");
 
+        ImGui::PushID(i);
         bool pressed = ImGui::Button(label, ImVec2(72.0f, 48.0f));
         if (!empty && def) {
             if (ImGui::IsItemHovered())
@@ -62,6 +63,7 @@ void InventoryPanel::draw(entt::registry& reg, entt::entity player,
             if (pressed)
                 itemSys.useItem(reg, disp, player, i);
         }
+        ImGui::PopID();
         ImGui::NextColumn();
     }
     ImGui::Columns(1);

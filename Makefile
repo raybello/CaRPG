@@ -17,7 +17,7 @@
 MAKEFLAGS += -j8
 
 # ---------- common config ----------
-APP        := web3d
+APP        := carpg
 SRC_DIR    := src
 IMGUI_DIR  := lib/imgui
 BACKEND_DIR:= $(IMGUI_DIR)/backends
