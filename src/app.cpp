@@ -126,6 +126,23 @@ void App::initGameEntities() {
     registry_.emplace<Material>(playerEntity_, scene_.cubeShader.program,
                                 glm::vec3(0.8f, 0.15f, 0.1f));
     registry_.emplace<Inventory>(playerEntity_);
+    {
+        // Player car: kinematic rigid body. The car's bicycle controller
+        // owns its motion; the rigid body just transfers momentum into
+        // dynamic items it bumps into.
+        BoxCollider bc; bc.halfExtents = glm::vec3(1.0f, 0.5f, 2.0f);
+        registry_.emplace<BoxCollider>(playerEntity_, bc);
+
+        RigidBody rb;
+        rb.mass            = 1500.0f;     // arcade car mass
+        rb.inverseMass     = 0.0f;        // kinematic → no impulse pushback
+        rb.kinematic       = true;
+        rb.useGravity      = false;
+        rb.invInertiaLocal = glm::mat3(0.0f);
+        rb.restitution     = 0.15f;
+        rb.friction        = 0.7f;
+        registry_.emplace<RigidBody>(playerEntity_, rb);
+    }
 
     // --- Chase / free-look camera ---
     cameraEcsEntity_ = registry_.create();
@@ -143,6 +160,20 @@ void App::initGameEntities() {
     registry_.emplace<MeshRef>(ground, MeshId::Ground);
     registry_.emplace<Material>(ground, scene_.groundShader.program,
                                 glm::vec3(0.28f, 0.30f, 0.26f));
+    {
+        // Ground: infinite plane at y = 0, fixed body.
+        PlaneCollider pc; pc.normal = glm::vec3(0.0f, 1.0f, 0.0f); pc.d = 0.0f;
+        registry_.emplace<PlaneCollider>(ground, pc);
+        RigidBody rb;
+        rb.mass            = 0.0f;
+        rb.inverseMass     = 0.0f;
+        rb.fixed           = true;
+        rb.useGravity      = false;
+        rb.invInertiaLocal = glm::mat3(0.0f);
+        rb.restitution     = 0.2f;
+        rb.friction        = 0.8f;
+        registry_.emplace<RigidBody>(ground, rb);
+    }
 
     // --- Directional light — rendered as a colored sphere ---
     lightEntity_ = registry_.create();
@@ -171,13 +202,35 @@ void App::spawnWorldItem(ItemId id, const glm::vec3& pos) {
     const ItemDef* def = getItemDef(id);
     auto ent = registry_.create();
     registry_.emplace<ItemWorldTag>(ent);
-    Transform tf; tf.position = pos; tf.scale = glm::vec3(0.4f);
+    Transform tf;
+    // Spawn slightly above the ground so they drop and bounce on first frame
+    // — visible signal that physics is running.
+    tf.position = pos + glm::vec3(0.0f, 1.2f, 0.0f);
+    tf.scale    = glm::vec3(0.4f);
     registry_.emplace<Transform>(ent, tf);
     MeshId mesh = def ? def->meshId : MeshId::Cube;
     registry_.emplace<MeshRef>(ent, mesh);
     glm::vec3 col = def ? def->color : glm::vec3(1.0f);
     registry_.emplace<Material>(ent, scene_.cubeShader.program, col);
     registry_.emplace<ItemComponent>(ent, id, 1u, def ? def->maxStack : 1u);
+
+    // Dynamic rigid body. Half-extents follow the entity's scale so the
+    // collider matches the rendered cube/sphere mesh (both meshes are
+    // unit-sized, scaled by Transform).
+    glm::vec3 he = tf.scale * 0.5f;
+    BoxCollider bc; bc.halfExtents = he;
+    registry_.emplace<BoxCollider>(ent, bc);
+
+    RigidBody rb;
+    rb.mass            = 1.0f;
+    rb.inverseMass     = 1.0f / rb.mass;
+    rb.invInertiaLocal = RigidBodySystem::boxInvInertia(rb.mass, he);
+    rb.restitution     = 0.45f;
+    rb.friction        = 0.55f;
+    rb.linearDamping   = 0.20f;
+    rb.angularDamping  = 0.40f;
+    rb.useGravity      = true;
+    registry_.emplace<RigidBody>(ent, rb);
 }
 
 void App::connectEventListeners() {
@@ -203,6 +256,21 @@ void App::tickSystems(float dt) {
     inputSys_.update(registry_, keys);
     statSys_.update(registry_);
     physicsSys_.update(registry_, dt);
+
+    // Bridge the kinematic car into the rigid body world: copy its current
+    // world-space velocity onto its RigidBody so collisions transfer momentum
+    // into items the car bumps. The car itself is kinematic (inverseMass=0)
+    // so the rigid body system never moves it back.
+    if (registry_.valid(playerEntity_) &&
+        registry_.all_of<Velocity, RigidBody>(playerEntity_)) {
+        const auto& v  = registry_.get<Velocity>(playerEntity_);
+        auto&       rb = registry_.get<RigidBody>(playerEntity_);
+        rb.linearVel  = v.linear;
+        rb.angularVel = glm::vec3(0.0f, glm::radians(v.angularY), 0.0f);
+    }
+
+    rigidBodySys_.update(registry_, dt);
+
     fuelSys_.update(registry_, dispatcher_, dt);
     itemSys_.update(registry_, dispatcher_, dt);
     cameraSys_.update(registry_, dt, vpW_, vpH_);
@@ -443,6 +511,31 @@ void App::drawPanel() {
                 ImGui::ColorEdit3("Color", &mat->color.x);
                 ImGui::Checkbox("Visible", &mat->visible);
             }
+            // Rigid body (live state + tunables)
+            if (auto* rb = registry_.try_get<RigidBody>(selectedEntity_)) {
+                ImGui::Separator();
+                ImGui::TextDisabled("Rigid Body");
+                const char* kind = rb->fixed     ? "fixed"
+                                 : rb->kinematic ? "kinematic"
+                                                 : "dynamic";
+                ImGui::Text("Type: %s", kind);
+                ImGui::Text("Mass: %.2f kg", rb->mass);
+                ImGui::SliderFloat("Restitution", &rb->restitution, 0.0f, 1.0f);
+                ImGui::SliderFloat("Friction",    &rb->friction,    0.0f, 2.0f);
+                if (!rb->fixed && !rb->kinematic) {
+                    ImGui::SliderFloat("Lin Damp", &rb->linearDamping,  0.0f, 5.0f);
+                    ImGui::SliderFloat("Ang Damp", &rb->angularDamping, 0.0f, 5.0f);
+                    ImGui::Checkbox("Gravity", &rb->useGravity);
+                }
+                ImGui::Text("v   %.2f, %.2f, %.2f",
+                            rb->linearVel.x, rb->linearVel.y, rb->linearVel.z);
+                ImGui::Text("ω   %.2f, %.2f, %.2f",
+                            rb->angularVel.x, rb->angularVel.y, rb->angularVel.z);
+                if (auto* bx = registry_.try_get<BoxCollider>(selectedEntity_)) {
+                    ImGui::Text("Box he: %.2f, %.2f, %.2f",
+                                bx->halfExtents.x, bx->halfExtents.y, bx->halfExtents.z);
+                }
+            }
             // Item info (read-only)
             if (registry_.all_of<ItemComponent>(selectedEntity_)) {
                 const auto& ic  = registry_.get<ItemComponent>(selectedEntity_);
@@ -485,6 +578,17 @@ void App::drawPanel() {
         ImGui::SliderFloat("Wheelbase",         &physicsSys_.wheelbase,        0.5f,  10.0f);
         ImGui::SliderFloat("Pivot Min Speed",   &physicsSys_.pivotMinSpeed,    0.1f,  10.0f);
         ImGui::SliderFloat("Pivot Yaw Rate",    &physicsSys_.pivotYawRate,     0.1f,   5.0f);
+    }
+
+    ImGui::Separator();
+
+    // ---- Rigid body physics --------------------------------------------
+    if (ImGui::CollapsingHeader("Rigid Body Physics", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::SliderFloat3("Gravity",      &rigidBodySys_.gravity.x,       -30.0f, 30.0f);
+        ImGui::SliderInt   ("Max Substeps", &rigidBodySys_.maxSubsteps,      1, 16);
+        ImGui::SliderFloat ("Fixed Step",   &rigidBodySys_.fixedStep,        1.0f/240.0f, 1.0f/30.0f);
+        ImGui::SliderFloat ("Pos Bias",     &rigidBodySys_.positionalBias,   0.0f, 1.0f);
+        ImGui::SliderFloat ("Pen Slop",     &rigidBodySys_.penetrationSlop,  0.0f, 0.05f);
     }
 
     ImGui::Separator();

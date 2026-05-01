@@ -11,6 +11,7 @@ typedef void* SDL_GLContext;
 #include <entt/entt.hpp>
 #include "systems/input_system.h"
 #include "systems/physics_system.h"
+#include "systems/rigid_body_system.h"
 #include "systems/fuel_system.h"
 #include "systems/stat_system.h"
 #include "systems/item_system.h"
@@ -73,6 +74,7 @@ private:
     // Systems
     InputSystem    inputSys_;
     PhysicsSystem  physicsSys_;
+    RigidBodySystem rigidBodySys_;
     FuelSystem     fuelSys_;
     StatSystem     statSys_;
     ItemSystem     itemSys_;
