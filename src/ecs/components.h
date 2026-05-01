@@ -118,6 +118,54 @@ struct Fuel {
 };
 
 // ---------------------------------------------------------------------------
+// Rigid body physics (concepts adapted from research/physics3D)
+// ---------------------------------------------------------------------------
+//
+// State for a 3D rigid body. Linear and angular velocities live here;
+// orientation/position live in Transform. Inertia tensor is stored in body
+// frame (invInertiaLocal); the rigid body system rotates it into world space
+// each frame as needed.
+//
+// Three "classes" of body, governed by two flags:
+//   fixed=true          → infinite mass, never moves (ground, walls)
+//   kinematic=true      → infinite mass for impulse purposes, but its
+//                         linearVel is still read so it transfers momentum
+//                         into dynamic bodies (e.g. the car shoving items)
+//   else                → fully dynamic: gravity + impulses move it
+//
+// fixed and kinematic both result in inverseMass = 0 and invInertiaLocal = 0.
+struct RigidBody {
+    float     mass            = 1.0f;
+    float     inverseMass     = 1.0f;
+    float     restitution     = 0.4f;
+    float     friction        = 0.5f;
+    glm::mat3 invInertiaLocal {0.0f};     // body-frame inverse inertia tensor
+    glm::vec3 linearVel       {0.0f};
+    glm::vec3 angularVel      {0.0f};     // world-space ω (rad/s)
+    glm::vec3 forceAccum      {0.0f};
+    glm::vec3 torqueAccum     {0.0f};
+    bool      fixed           = false;
+    bool      kinematic       = false;
+    bool      useGravity      = true;
+    float     linearDamping   = 0.05f;    // per-second
+    float     angularDamping  = 0.30f;
+};
+
+// Oriented bounding box collider. Half-extents in the entity's local space;
+// the world-space OBB is reconstructed from Transform each step.
+struct BoxCollider {
+    glm::vec3 halfExtents {0.5f, 0.5f, 0.5f};
+};
+
+// Infinite plane collider in world space. Stored as { n, d } with n·x = d.
+// The ground uses this to avoid pretending a 100m × 100m sliver-thin OBB is
+// meaningful for SAT.
+struct PlaneCollider {
+    glm::vec3 normal {0.0f, 1.0f, 0.0f};
+    float     d      = 0.0f;
+};
+
+// ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
 struct MeshRef {
