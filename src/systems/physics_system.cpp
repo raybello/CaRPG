@@ -160,9 +160,11 @@ void PhysicsSystem::update(entt::registry& reg, float dt) {
             // ---- c) Drive / brake force ---------------------------------
             if (!wheel.isDriven) continue;
 
-            // Forward drive — power curve scales torque down as speed rises.
+            // Forward drive — power curve scales torque down as forward speed rises.
+            // Only clamp on the positive (forward) side: going backward should
+            // always allow full forward thrust so the car can recover from reverse.
             if (cv.appliedThrottle > 0.001f) {
-                float normSpeed = std::clamp(std::fabs(carSpeedFwd) / topSpeed, 0.0f, 1.0f);
+                float normSpeed = std::clamp(carSpeedFwd / topSpeed, 0.0f, 1.0f);
                 float torqueMul = std::max(0.0f, 1.0f - normSpeed);
                 rbAddForceAtPosition(rb, tf,
                     wheelFwd * cv.maxTorque * torqueMul * cv.appliedThrottle,
@@ -188,11 +190,12 @@ void PhysicsSystem::update(entt::registry& reg, float dt) {
             }
 
             // Engine braking when fully coasting — speed-proportional drag.
-            // kEngineBrake=2.5: at 10 m/s → 2000 N total (1.3 m/s² for 1500 kg car).
+            // Uses -carSpeedFwd (not fabs) so force always opposes actual travel
+            // direction: forward → backward force, backward → forward force.
             if (cv.appliedThrottle < 0.001f && tgtBrake < 0.01f) {
                 constexpr float kEngineBrake = 2.5f;
                 rbAddForceAtPosition(rb, tf,
-                    -wheelFwd * std::fabs(carSpeedFwd) * kEngineBrake * wheel.wheelMass,
+                    wheelFwd * (-carSpeedFwd) * kEngineBrake * wheel.wheelMass,
                     worldWheelPos);
             }
         }

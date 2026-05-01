@@ -110,8 +110,8 @@ struct DerivedCarStats {
 struct Fuel {
     float current           = 100.0f;
     float max               = 100.0f;
-    float idleDrainPerSec   = 0.5f;
-    float accelDrainPerUnit = 2.0f;
+    float idleDrainPerSec   = 0.05f;   // ~33 min idle
+    float accelDrainPerUnit = 0.35f;   // ~4 min at full throttle
 
     bool depleted() const { return current <= 0.0f; }
     float ratio()   const { return max > 0.0f ? current / max : 0.0f; }
