@@ -22,6 +22,7 @@ SRC_DIR    := src
 IMGUI_DIR  := lib/imgui
 BACKEND_DIR:= $(IMGUI_DIR)/backends
 IMGUIZMO_DIR:= lib/imguizmo
+BOX3D_DIR  := lib/box3d
 
 # Source files (project + imgui)
 APP_SRCS := \
@@ -55,14 +56,33 @@ IMGUI_SRCS := \
 
 ALL_SRCS := $(APP_SRCS) $(IMGUI_SRCS)
 
+# box3d is a C17 library — its .c files must never go through the C++
+# frontend (out-of-order designated initializers, implicit void* casts, etc.
+# are invalid C++). Compiled separately below via NATIVE_CC/WEB_CC and
+# linked into the same binary; B3_API's extern "C" guard keeps linkage
+# compatible with the C++ call sites.
+BOX3D_SRCS := \
+    aabb.c arena_allocator.c bitset.c block_allocator.c body.c broad_phase.c \
+    capsule.c compound.c constraint_graph.c contact.c contact_solver.c \
+    convex_manifold.c core.c distance.c distance_joint.c dynamic_tree.c \
+    height_field.c hull.c id_pool.c island.c joint.c manifold.c \
+    math_functions.c mesh.c mesh_contact.c motor_joint.c mover.c name_cache.c \
+    parallel_for.c parallel_joint.c physics_world.c prismatic_joint.c \
+    recording.c recording_replay.c revolute_joint.c scheduler.c sensor.c \
+    shape.c simd.c solver.c solver_set.c sphere.c spherical_joint.c table.c \
+    timer.c triangle_manifold.c types.c weld_joint.c wheel_joint.c \
+    world_snapshot.c
+BOX3D_SRCS := $(addprefix $(BOX3D_DIR)/src/,$(BOX3D_SRCS))
+
 GLM_DIR    := lib/glm
 ENTT_DIR   := lib/entt/single_include
 JSON_DIR   := lib/json/single_include
 STB_DIR    := lib/assimp/contrib/stb
-INCLUDES := -I$(SRC_DIR) -I$(IMGUI_DIR) -I$(BACKEND_DIR) -I$(IMGUIZMO_DIR) -I$(GLM_DIR) -I$(ENTT_DIR) -I$(JSON_DIR) -I$(STB_DIR)
+INCLUDES := -I$(SRC_DIR) -I$(IMGUI_DIR) -I$(BACKEND_DIR) -I$(IMGUIZMO_DIR) -I$(GLM_DIR) -I$(ENTT_DIR) -I$(JSON_DIR) -I$(STB_DIR) -I$(BOX3D_DIR)/include
 
 # Shared compile flags (added to whichever toolchain is used)
 COMMON_CXXFLAGS := -std=c++20 -Wall -Wformat -Wno-unused-function $(INCLUDES)
+COMMON_CFLAGS   := -std=c17 -Wall -I$(BOX3D_DIR)/include
 
 # ---------- native target ----------
 NATIVE_BUILD_DIR := build
@@ -73,6 +93,8 @@ UNAME_S := $(shell uname -s)
 
 NATIVE_CXX  := g++
 NATIVE_CXXFLAGS := $(COMMON_CXXFLAGS) -O2 -g
+NATIVE_CC       := gcc
+NATIVE_CFLAGS   := $(COMMON_CFLAGS) -O2 -g
 NATIVE_LIBS :=
 
 ifeq ($(UNAME_S),Linux)
@@ -90,14 +112,20 @@ endif
 
 # Map .cpp to .o under the build dir, mirroring directories so source names are unique
 NATIVE_OBJS := $(patsubst %.cpp,$(NATIVE_OBJ_DIR)/%.o,$(ALL_SRCS))
+NATIVE_OBJS += $(patsubst %.c,$(NATIVE_OBJ_DIR)/%.o,$(BOX3D_SRCS))
 
 # ---------- web target (emscripten) ----------
 WEB_DIR        := docs
 WEB_OBJ_DIR    := build/web-obj
 WEB_OUT        := $(WEB_DIR)/index.html
 WEB_CXX        := em++
+WEB_CC         := emcc
 WEB_EMS        := -s USE_SDL=2 -s DISABLE_EXCEPTION_CATCHING=1 -DIMGUI_IMPL_OPENGL_ES3
 WEB_CXXFLAGS   := $(COMMON_CXXFLAGS) -Os $(WEB_EMS)
+# _POSIX_C_SOURCE: Emscripten's libc hides clock_gettime/nanosleep (used by
+# box3d's timer.c) under strict -std=c17 without this; unneeded natively since
+# both glibc and Apple's libc expose them regardless of the C standard chosen.
+WEB_CFLAGS     := $(COMMON_CFLAGS) -Os -DBOX3D_DISABLE_SIMD -D_POSIX_C_SOURCE=200809L
 WEB_LDFLAGS    := -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 -s NO_EXIT_RUNTIME=0 \
                   -s ASSERTIONS=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
                   -s USE_WEBGL2=1 -s MIN_WEBGL_VERSION=2 \
@@ -105,6 +133,7 @@ WEB_LDFLAGS    := -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 -s NO_EXIT_RUNTIME=0 \
                   --shell-file $(IMGUI_DIR)/examples/libs/emscripten/shell_minimal.html
 
 WEB_OBJS := $(patsubst %.cpp,$(WEB_OBJ_DIR)/%.o,$(ALL_SRCS))
+WEB_OBJS += $(patsubst %.c,$(WEB_OBJ_DIR)/%.o,$(BOX3D_SRCS))
 
 # ---------- top-level rules ----------
 .PHONY: all native web run serve clean clean-native clean-web help dirs
@@ -129,6 +158,10 @@ $(NATIVE_OBJ_DIR)/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(NATIVE_CXX) $(NATIVE_CXXFLAGS) -c -o $@ $<
 
+$(NATIVE_OBJ_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(NATIVE_CC) $(NATIVE_CFLAGS) -c -o $@ $<
+
 $(NATIVE_BIN): $(NATIVE_OBJS)
 	@mkdir -p $(dir $@)
 	$(NATIVE_CXX) $(NATIVE_CXXFLAGS) -o $@ $^ $(NATIVE_LIBS)
@@ -138,6 +171,10 @@ $(NATIVE_BIN): $(NATIVE_OBJS)
 $(WEB_OBJ_DIR)/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(WEB_CXX) $(WEB_CXXFLAGS) -c -o $@ $<
+
+$(WEB_OBJ_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(WEB_CC) $(WEB_CFLAGS) -c -o $@ $<
 
 $(WEB_OUT): $(WEB_OBJS)
 	@mkdir -p $(dir $@)
