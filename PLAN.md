@@ -1,109 +1,172 @@
-# Plan: Integrate ImGuizmo for Entity Transform Manipulation
+Plan: Replace custom rigid-body physics with box3d
+1. Build system integration (Makefile)
+Critical, non-obvious risk found while reading the headers: B3_API expands to extern "C" BOX3D_EXPORT only #ifdef __cplusplus (lib/box3d/include/box3d/base.h:38). box3d's own 49 .c files under lib/box3d/src/ are genuine C17 — they almost certainly use out-of-order/nested C99 designated initializers (e.g. (b3BodyDef){ .position = p, .type = b3_dynamicBody } not in declaration order) and implicit void*→typed-pointer conversions, both invalid in C++. Do not compile them with g++/em++. GCC/Clang's g++ driver treats .c inputs as C++ regardless of -std=c17 (that flag isn't even a valid -std= value for the C++ frontend and will error). You need a real C compiler invocation. Two safe options — recommend (a):
 
-## Overview
+(a) Introduce a separate native C compiler variable, e.g. NATIVE_CC := gcc (or cc), and a separate Emscripten C compiler, e.g. WEB_CC := emcc (not em++). This mirrors the existing per-toolchain split (NATIVE_CXX/WEB_CXX) so it's idiomatic to this Makefile.
+(b) Alternative if you want to avoid adding new compiler binaries: keep g++/em++ but force C mode with -x c -std=c17 -x none bracketing in the recipe. More fragile — prefer (a).
+Confirmed via lib/box3d/include/box3d/config.h: it is a plain committed header, not a CMake configure_file template, and its own comment states "A define passed on the compiler command line still wins over this file" — so BOX3D_DISABLE_SIMD can simply be passed as -DBOX3D_DISABLE_SIMD on the web C compile line, no file editing needed.
 
-Add ImGuizmo to provide visual 3D transform gizmos (translate/rotate/scale) for
-any renderable entity with a `Transform` component. The gizmo is drawn over the
-viewport and allows direct manipulation of an entity's position, rotation, and
-scale.
+Confirmed exact 49-file source list via ls lib/box3d/src/*.c (the brief's count of 47 was close but not exact — use this list, not a guess):
 
-## Changes
 
-### 1. Makefile (lines 21-55)
+aabb.c arena_allocator.c bitset.c block_allocator.c body.c broad_phase.c
+capsule.c compound.c constraint_graph.c contact.c contact_solver.c
+convex_manifold.c core.c distance.c distance_joint.c dynamic_tree.c
+height_field.c hull.c id_pool.c island.c joint.c manifold.c
+math_functions.c mesh.c mesh_contact.c motor_joint.c mover.c name_cache.c
+parallel_for.c parallel_joint.c physics_world.c prismatic_joint.c
+recording.c recording_replay.c revolute_joint.c scheduler.c sensor.c
+shape.c simd.c solver.c solver_set.c sphere.c spherical_joint.c table.c
+timer.c triangle_manifold.c types.c weld_joint.c wheel_joint.c
+world_snapshot.c
+Concrete Makefile edits (/Users/raybello/Github/CaRPG/Makefile):
 
-- Add `lib/imguizmo/ImGuizmo.cpp` to `IMGUI_SRCS`
-- Add `-Ilib/imguizmo` to `INCLUDES`
+Add near the top, alongside IMGUIZMO_DIR:
 
-### 2. `src/app.h`
+BOX3D_DIR := lib/box3d
+Add a new source list BOX3D_SRCS = the 49 files above, each prefixed $(BOX3D_DIR)/src/.
+Add -I$(BOX3D_DIR)/include to INCLUDES. No private include path is needed — the .c files use quoted includes ("core.h") resolved relative to their own directory by the compiler's default quote-search behavior, regardless of the build's working directory.
+Add C-specific flags, separate from COMMON_CXXFLAGS:
 
-Add member variables after `showShaderPopup_` (~line 50):
+COMMON_CFLAGS := -std=c17 -Wall -I$(BOX3D_DIR)/include
+NATIVE_CC      := gcc
+NATIVE_CFLAGS  := $(COMMON_CFLAGS) -O2 -g
+WEB_CC         := emcc
+WEB_CFLAGS     := $(COMMON_CFLAGS) -Os -DBOX3D_DISABLE_SIMD
+Extend the object lists: today NATIVE_OBJS/WEB_OBJS are built via patsubst %.cpp,...,$(ALL_SRCS)), which silently would not match .c files. Add parallel patsubst lines and union them:
 
-```cpp
-    // ImGuizmo state
-    ImGuizmo::OPERATION gizmoOperation_ = ImGuizmo::TRANSLATE;
-    ImGuizmo::MODE      gizmoMode_      = ImGuizmo::WORLD;
-    bool                useGizmoSnap_   = false;
-```
+NATIVE_OBJS += $(patsubst %.c,$(NATIVE_OBJ_DIR)/%.o,$(BOX3D_SRCS))
+WEB_OBJS    += $(patsubst %.c,$(WEB_OBJ_DIR)/%.o,$(BOX3D_SRCS))
+(keep ALL_SRCS as the .cpp-only list so the existing %.cpp rule is untouched; box3d's .c files are tracked separately.)
+Add generic .c build rules next to the existing .cpp ones, one per toolchain:
 
-Add method declaration (~line 92):
+$(NATIVE_OBJ_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(NATIVE_CC) $(NATIVE_CFLAGS) -c -o $@ $<
 
-```cpp
-    void drawGizmo();
-```
+$(WEB_OBJ_DIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(WEB_CC) $(WEB_CFLAGS) -c -o $@ $<
+Final link steps ($(NATIVE_BIN), $(WEB_OUT)) already link $(NATIVE_OBJS)/$(WEB_OBJS) with g++/em++ — no change needed there; mixing C-compiled and C++-compiled .o files under a C++ linker driver is standard and safe here specifically because B3_API's extern "C" guard (triggered by __cplusplus being defined when your C++ translation units include box3d.h) ensures the C++ side calls these symbols with unmangled C linkage, matching what the C compiler produced.
+-msimd128 -msse2 (box3d's own CMake Emscripten branch) is irrelevant since we bypass their CMake; leaving SIMD off for web via -DBOX3D_DISABLE_SIMD sidesteps needing those flags at all. Native build keeps SIMD on (default, no define needed).
+Verification step, do not assume: confirm emcc actually accepts and correctly compiles this C17 codebase (structs with unions, _Generic if used, atomics if used in scheduler.c/parallel_for.c for the optional multithreading path — you won't enable multithreading, but the file still needs to compile even with threading code paths present under #ifdef). Do this empirically in Phase 1 of staging (below), not by assumption.
+2. Physics world lifecycle
+Add b3WorldId b3World_ = b3_nullWorldId; (or whatever the null-sentinel macro is called — verify with grep -n "nullWorldId\|B3_IS_NULL\|b3_nullBodyId" lib/box3d/include/box3d/id.h before writing code) as an App member in src/app.h, declared near entt::registry registry_; since it plays the same "owns simulation state" role.
+#include <box3d/box3d.h> needs to land somewhere App-adjacent; cleanest is a new thin header src/physics/box3d_world.h or just include directly in app.h/app.cpp — box3d.h is a C header but is safe to #include from C++ TUs (all declarations are B3_API = extern "C" ...).
+Init timing: create the world at the start of App::initGame() (src/app.cpp ~line 108), before initGameEntities(), since entity creation now needs a live b3WorldId to create bodies into. Use b3DefaultWorldDef() then override .gravity = {0, -9.81f, 0} (replaces RigidBodySystem::gravity).
+Teardown timing: call b3DestroyWorld(b3World_) in App::shutdown() (src/app.cpp:1235), before registry_.clear()/destruction if such a call exists there — check the actual body of shutdown() to sequence it correctly (destroy world after registry-held resources that reference bodies are no longer needed, but registry entities don't own GL/box3d resources directly if using the thin-ID-component design in Section 3, so ordering is low-risk either way).
+Tick-loop redesign — this is the most important semantic correction to the brief. The brief's own framing is correct: b3World_Step(worldId, timeStep, subStepCount) takes one fixed timeStep per call, internally divided into subStepCount TGS soft-step solver iterations — it is not the same shape as RigidBodySystem::update's "run the whole integrate+collide+resolve pipeline N times per frame" loop. The old code (src/systems/rigid_body_system.cpp:470-483) computes nSteps = min(maxSubsteps, ceil(dt/fixedStep)) and calls stepOnce that many times per frame, each a full physics step. box3d instead wants exactly one b3World_Step call per fixed-size tick, with subStepCount as an internal solver-quality knob (not a per-frame repeat count).
 
-### 3. `src/app.cpp`
+Recommended replacement in App::tickSystems (src/app.cpp:444, replacing the rigidBodySys_.update(registry_, dt) call at line 466):
 
-#### 3a. Add include (after line 21)
 
-```cpp
-#include "ImGuizmo.h"
-```
+physicsAccumulator_ += dt;                 // new App member, float, default 0
+const float kFixedStep = 1.0f / 60.0f;     // replaces rigidBodySys_.fixedStep as the tunable
+const int   kSubSteps  = 4;                // replaces "maxSubsteps" conceptually — now a solver-quality knob, not a repeat count
+const int   kMaxTicksPerFrame = 4;         // clamp so a hitch doesn't spiral (spiral-of-death guard)
+int ticks = 0;
+while (physicsAccumulator_ >= kFixedStep && ticks < kMaxTicksPerFrame) {
+    physicsSys_.update(registry_, kFixedStep);   // apply suspension/drive forces for this tick (see §4)
+    b3World_Step(b3World_, kFixedStep, kSubSteps);
+    syncTransformsFromBox3D(registry_, b3World_); // new: pull b3Body_GetPosition/GetRotation into Transform for all bodies
+    physicsAccumulator_ -= kFixedStep;
+    ticks++;
+}
+if (ticks == kMaxTicksPerFrame) physicsAccumulator_ = 0.0f;  // drop backlog rather than spiral
+The old rigidBodySys_.maxSubsteps inspector slider (app.cpp:838, range 1-16) should be repurposed as the b3World_Step subStepCount argument (still a meaningful "accuracy vs. cost" tunable, just semantically different — document this in the UI label, e.g. rename to "Sub-Steps (solver quality)").
+The old rigidBodySys_.fixedStep slider (app.cpp:839) becomes the accumulator's kFixedStep — keep it live-tunable the same way.
+positionalBias/penetrationSlop (app.cpp:840-841) have no box3d equivalent to expose the same way — box3d's contact softness is controlled by b3WorldDef.contactHertz/contactDampingRatio/contactSpeed (see types.h ~line 150-160). Recommend replacing those two sliders with sliders bound to those three b3WorldDef fields, applied by re-fetching/mutating world-level tuning. Verify whether box3d exposes a live setter for these post-creation (grep b3World_Set in box3d.h) or whether they're creation-time-only in b3WorldDef, in which case the sliders become "apply on next b3CreateWorld" (rare need) rather than live — flag this as a verification step before wiring the UI.
+3. Component/body mapping strategy
+Recommend the thin-ID approach (option (a) in the brief) — box3d becomes the sole source of truth for dynamic state; ECS components become either construction-time inputs or read-only mirrors.
 
-#### 3b. In `frame()` — call `ImGuizmo::BeginFrame()` after `ImGui::NewFrame()` (~line 598)
+New component struct PhysicsBody { b3BodyId id = b3_nullBodyId; b3ShapeId shapeId = b3_nullShapeId; }; — replaces the state half of RigidBody. Add to src/ecs/components.h.
+RigidBody (src/ecs/components.h ~line 116-140): mass, restitution, friction, linearDamping, angularDamping, useGravity, fixed, kinematic all become construction-time inputs only — read once when building b3BodyDef/b3ShapeDef (b3ShapeDef.baseMaterial.friction/.restitution, b3ShapeDef.density derived from mass/volume or set via b3Body_SetMassData post-creation, b3BodyDef.linearDamping/.angularDamping/.gravityScale, b3BodyDef.type from fixed/kinematic). invInertiaLocal, linearVel, angularVel, forceAccum, torqueAccum are deleted entirely — box3d owns velocity (b3Body_GetLinearVelocity/GetAngularVelocity) and there is no persistent force accumulator to mirror (forces are applied per-tick via b3Body_ApplyForce, see §4). Decide: either delete RigidBody outright and keep only the construction-time fields inline in each spawn function, or keep a slimmed RigidBody struct as a "spawn recipe" component that's read once and can be discarded/kept for inspector display (recommend keeping a slim version purely for the inspector to still show mass/friction/restitution by querying box3d directly via b3Shape_GetFriction/b3Shape_GetRestitution/b3Body_GetMass at display time instead of caching in ECS — this avoids stale-data bugs since box3d is authoritative).
+BoxCollider: becomes a construction-time-only descriptor consumed when calling b3MakeBoxHull(halfExtents.x, halfExtents.y, halfExtents.z) → b3CreateHullShape(bodyId, &shapeDef, &boxHull.base). Keep the component post-creation only if something (rendering, gizmo bounds) still reads halfExtents for non-physics purposes — check src/systems/render_system.cpp / gizmo bounds code for such a dependency before deciding to delete it; if nothing else reads it, delete it and read shape extents back from box3d via b3Shape_GetHull when needed. The skipGroundCollision flag's purpose (letting the player car's suspension own vertical motion without a competing SAT ground impulse) needs a box3d-native equivalent — see the callout below.
+PlaneCollider: box3d has no infinite-plane primitive (confirmed — collision.h/types.h have no b3Plane shape type, only a b3Plane math helper struct used internally for hull faces). Replace the ground with a large thin static hull box exactly as box3d's own hello.md does: b3MakeBoxHull(50.0f, 10.0f, 50.0f) positioned so its top face sits at y=0 (i.e., body position at y = -10, matching the doc example's own idiom). Delete PlaneCollider from components.h and the ground-construction block at src/app.cpp:219-229; the visual ground quad mesh (MeshId::Ground, unaffected by this refactor) can stay a thin visual plane even though the physics body is a deep box — cosmetic mismatch is invisible since the box is buried below y=0.
+How skipGroundCollision maps: this existed because the player car had two independent things fighting for the vertical axis: the SAT box-vs-plane ground impulse, and the suspension spring's own vertical force. In box3d this concern doesn't disappear — the car's b3HullShape will always generate a normal ground contact/impulse from box3d's own solver (there is no way to tell one shape to ignore one specific other shape's contact response short of b3Filter/collision groups, which would also disable lateral contact with the ground, likely undesirable). Two real options, flag as a design decision for the user rather than silently picking one:
+Keep the car's hull shape colliding normally with the ground (drop skipGroundCollision semantics entirely) and retune spring constants — box3d's own contact solver is far more robust than the old hand-written SAT+Baumgarte code, so the two forces "fighting" may simply not reproduce the old jitter; the wheels' raycasts already keep the chassis floating above actual wheel contact, so the chassis hull's own ground contact would only matter if the car scrapes its belly (arguably correct behavior).
+If belly-scraping contact needs to be suppressed identically to the old behavior, use b3ShapeDef.filter (b3Filter.categoryBits/maskBits) on the chassis hull to exclude the ground's category, preserving old behavior exactly. Recommend (1) first (simpler, tests box3d's solver honestly) and fall back to (2) only if playtesting in Phase 3/4 (below) shows chassis-vs-ground fighting.
+CarVehicle/WheelState: stay almost entirely as-is — these are gameplay-tuned data, not physics-engine state, and nothing in them (localOffset, springStrength, gripFactor, wheelMass, radius, runtime grounded/compressionRatio/contactDist) has a box3d-native representation to replace. Keep this component unchanged; only its consumer (PhysicsSystem::update) needs rewriting (§4).
+Velocity: keep as-is — it's already documented as display/HUD-only, and PhysicsSystem::update's final vel->linear = rb.linearVel sync point (physics_system.cpp, last block) becomes vel->linear = <glm vec from b3Body_GetLinearVelocity(bodyId)>.
+4. The vehicle suspension system
+The recommendation is exactly as the brief anticipates: keep the algorithm, replace only its two low-level dependencies.
 
-#### 3c. In `frame()` — skip game tick when gizmo is active (~line 586)
+(a) Raycasts. Replace the collidables vector + raycastPlane/raycastBox loop (src/systems/physics_system.cpp lines ~44-66, 105-118) with a single box3d world query per wheel. Correct symbol (the brief's b3World_RayCastClosest name is wrong — verified the real name is b3World_CastRayClosest):
 
-Change:
-```cpp
-if (gameRunning_) tickSystems(dt);
-```
-To:
-```cpp
-if (gameRunning_ && !ImGuizmo::IsUsing()) tickSystems(dt);
-```
 
-#### 3d. In `frame()` — call `drawGizmo()` after `drawPanel()` (~line 629)
+B3_API b3RayResult b3World_CastRayClosest( b3WorldId worldId, b3Pos origin, b3Vec3 translation, b3QueryFilter filter );
+Note translation is end - start (a vector, origin + translation = ray end — i.e. direction × maxDistance, not a normalized direction with a separate max-distance parameter), so the call site becomes:
 
-#### 3e. In `frame()` — add keyboard shortcuts (~line 580)
 
-- `T` key → switch to TRANSLATE
-- `E` key → switch to ROTATE
-- `R` key → switch to SCALE
-- `S` key → toggle snap
+b3Vec3 origin      = toB3(worldWheelPos + worldUp * wheel.suspensionTravel);
+b3Vec3 translation = toB3(-worldUp * maxRayDist);   // maxRayDist = suspensionRestDist + suspensionTravel, as today
+b3RayResult hit = b3World_CastRayClosest(b3World_, origin, translation, b3DefaultQueryFilter());
+if (hit.hit) { float distance = hit.fraction * maxRayDist; ... }
+b3RayResult.fraction is the fraction of translation (0..1), so distance = hit.fraction * length(translation), replacing the old RaycastHit::distance. hit.point/hit.normal map directly to the old RaycastHit::point/::normal. b3DefaultQueryFilter() with no exclusion is fine as a first pass; if you want the wheel raycast to ignore the car's own hull (recommended, to avoid the ray hitting the car body's belly instead of the ground), use b3QueryFilter.categoryBits/maskBits on the query vs. the chassis shape's category, or check hit.shapeId against the player's own b3ShapeId and re-cast/skip if they match — verify which pattern is more idiomatic by reading b3Filter's doc comment (types.h ~line 355) before implementing. This also replaces the whole "collect fixed collidables into a vector every frame" pattern (physics_system.cpp lines 44-66) — no manual iteration needed at all since box3d's broad-phase does this internally; delete that block outright.
+raycast.h (src/systems/raycast.h) is confirmed (by the brief's own grep and independently by the "no other users" check in this task) to be used only by physics_system.cpp — delete it once the above lands.
 
-#### 3f. Implement `drawGizmo()` method at end of file
+(b) Force application. Verified exact symbols in box3d.h:
 
-Logic:
-1. Early return if `selectedEntity_` is `entt::null` or lacks `Transform`
-2. Get view/projection matrices from `CameraState` on `cameraEcsEntity_`
-3. Convert `Transform::toMatrix()` (glm column-major) → row-major `float[16]` via `glm::transpose()`
-4. Call `ImGuizmo::SetRect(0, 0, vpW_, vpH_)`
-5. Call `ImGuizmo::Manipulate(view, proj, operation, mode, matrix, ...)`
-6. If Manipulate returns true (matrix changed), decompose back to
-   position/rotation/scale and update the `Transform` component
 
-#### 3g. In `drawPanel()` Uniforms section (~line 351)
+B3_API void b3Body_ApplyForce( b3BodyId bodyId, b3Vec3 force, b3Pos point, bool wake );
+B3_API void b3Body_ApplyForceToCenter( b3BodyId bodyId, b3Vec3 force, bool wake );
+B3_API void b3Body_ApplyTorque( b3BodyId bodyId, b3Vec3 torque, bool wake );
+b3Body_ApplyForce(bodyId, force, point, /*wake=*/true) replaces rbAddForceAtPosition(rb, tf, force, pointWorld) directly — same semantics (force at a world point, torque computed internally by box3d). All ~8 call sites in physics_system.cpp (spring, lateral grip, drive, brake, rolling resistance, engine braking) become straight substitutions of rbAddForceAtPosition(rb, tf, F, P) → b3Body_ApplyForce(bodyId, toB3(F), toB3(P), true). rbGetPointVelocity is replaced by b3Body_GetWorldPointVelocity(bodyId, worldPoint) (exact match, confirmed in header, line 564) — delete the free function.
 
-When a Transform entity is selected, add gizmo controls **above** the existing
-Transform sliders:
+(c) The preStepCb/substep-reapplication problem. This is real and needs to be called out explicitly: the old code re-ran PhysicsSystem::update once per RigidBodySystem substep (up to maxSubsteps=4 times per frame) specifically so spring forces weren't "zeroed out" between the old integrator's substep boundaries. box3d's b3World_Step is opaque — you cannot hook mid-step. Under the new accumulator model (§2), forces are naturally applied once per fixed tick (kFixedStep = 1/60s), immediately before b3World_Step. This is actually more correct than the old scheme in one sense (the old scheme reapplied stale/unphysical forces 4× within a single 1/60s window against a still-evolving position), but it does mean the suspension only samples ground distance/velocity once per 1/60s tick rather than up to 4× as often within that window.
 
-- Radio buttons: Translate / Rotate / Scale
-- Toggle: Local / World mode
-- Checkbox: Snap + snap value input (per operation, following README example)
+Game-feel risk: stiffer springs (springStrength up to 100,000 N/m per the inspector's slider range) sampled at 60Hz rather than effectively ~240Hz (4 old substeps × 60fps) can be less stable/more jittery, since spring-damper systems are sensitive to sample rate relative to their natural frequency. Mitigation options, in order of preference:
 
-## Matrix Conversion Approach
+First, just try it at 60Hz — box3d's own solver runs 4 internal TGS soft-step sub-iterations per b3World_Step call even though your force application only happens once; this is a fundamentally more stable integrator (soft constraints, not naive semi-implicit Euler) than the old code's, so the old 240Hz-reapplication workaround may simply not be needed anymore.
+If jitter appears, decrease kFixedStep (e.g. call b3World_Step at a 120Hz or 240Hz fixed tick instead of 60Hz, applying physicsSys_.update once per tick as before) — this trades CPU for stability while staying conceptually correct (this is the proper way to increase suspension sample rate under this new architecture, replacing what maxSubsteps-reapplication used to do).
+Only as a last resort, consider evaluating the suspension raycast/spring math at a higher rate than the box3d step itself (e.g. sample forces 4× per tick, apply as one accumulated b3Body_ApplyForce call before stepping) — more complex, likely unnecessary given (1)/(2).
+Recommend: ship Phase 4 (below) with 60Hz first, measure/playtest, only reach for (2) if there's visible chassis jitter or spring instability.
 
-ImGuizmo expects row-major `float[16]`; glm uses column-major.
+5. Editor/inspector panel (src/app.cpp ~747-841)
+RigidBody panel block (line 747-770): rewrite to read from box3d instead of the ECS RigidBody struct. rb->mass → b3Body_GetMass(bodyId); rb->restitution/friction sliders → b3Shape_GetRestitution(shapeId)/b3Shape_SetRestitution(shapeId, v) and b3Shape_GetFriction/SetFriction (both confirmed setters exist, box3d.h lines 878-887); linearDamping/angularDamping sliders → b3Body_GetLinearDamping/SetLinearDamping and angular equivalents (confirmed, lines 653-662); useGravity checkbox → no direct bool, but b3Body_SetGravityScale(bodyId, 0.0f or 1.0f) is the equivalent (lines 666-669) — repurpose the checkbox to toggle gravity scale 0↔1. rb->linearVel/angularVel display → b3Body_GetLinearVelocity/GetAngularVelocity. bx->halfExtents display → b3Shape_GetHull(shapeId) then read the box's extents back out (more involved than before — if this is purely diagnostic text, simplest is to just keep the original half-extents cached in the slim BoxCollider/PhysicsBody component at spawn time for display purposes only, since it never changes post-creation for these entities).
+Vehicle/wheel tuning block (line 786-825): untouched — operates purely on CarVehicle/physicsSys_ fields which are staying (§3/§4).
+RigidBodySystem tunables block (line 837-841): replace per §2 — gravity slider now mutates b3WorldDef-derived world gravity (verify a live setter exists, e.g. grep b3World_SetGravity in box3d.h, rather than assuming — if none exists this becomes a "restart world to apply" control, flag as a UX regression to note to the user), maxSubsteps→ the kSubSteps subStepCount argument passed into b3World_Step each tick (a plain int App:: member now, not a system field), fixedStep→ kFixedStep (plain float App:: member), positionalBias/penetrationSlop → replaced by contactHertz/contactDampingRatio/contactSpeed sliders as discussed in §2 (verify whether these have live setters or are creation-time-only before wiring).
+ImGuizmo integration (App::drawGizmo, src/app.cpp:1000-1069): today, tf->position/tf->rotation/tf->scale are written directly from the decomposed gizmo matrix, and that's the entire effect — Transform is otherwise passively read by RigidBodySystem next frame. Under box3d, Transform is no longer authoritative for physics bodies; the gizmo write needs a companion call to push the edited pose into box3d, or the very next syncTransformsFromBox3D call (§2) will immediately overwrite the gizmo's edit with box3d's stale last-known position, discarding the user's manipulation. Fix: in the used branch of drawGizmo(), after tf->rotation = ..., add: if the selected entity has a PhysicsBody component, call b3Body_SetTransform(bodyId, toB3Pos(tf->position), toB3Quat(tf->rotation)) (confirmed exact symbol, box3d.h:528) so box3d's internal state matches the gizmo edit before the next step. Also call b3Body_SetLinearVelocity(bodyId, {0,0,0}) and SetAngularVelocity(bodyId, {0,0,0}) to avoid box3d carrying stale momentum through a teleport (the old code implicitly zeroed nothing since RigidBody.linearVel was untouched by the gizmo either — check whether that's actually desired old behavior or an existing minor bug; either way box3d needs an explicit decision here since a large instantaneous teleport with stale velocity could produce a violent contact-resolution spike next step).
+playerGizmoMoved_ flag (src/app.h, src/app.cpp:459, 1062): originally existed so physics could "skip a Y-reset the frame after a gizmo move" — this was presumably a RigidBodySystem/PhysicsSystem-specific special-case (search playerGizmoMoved_ usage inside physics_system.cpp/rigid_body_system.cpp to confirm exactly what it gated — it wasn't referenced in the two source files read for this plan, so it may only be read elsewhere, e.g. in a Y-clamp inside PhysicsSystem::update not shown, or it may currently be dead/vestigial). Flag as a verification step: grep playerGizmoMoved_ across the whole repo before touching it, confirm what it actually gates today, and decide whether the box3d equivalent is simply "the b3Body_SetTransform call above already achieves this, so the flag can be deleted" or whether it still needs to survive as a one-tick skip flag for some other physics behavior.
+6. Files to delete / keep / modify
+File	Action
+src/systems/rigid_body_system.h / .cpp	Delete. SAT collision, impulse resolution, Baumgarte correction, integration, boxInvInertia helper, and the rb* free functions are all fully superseded by box3d.
+src/systems/raycast.h	Delete. Confirmed sole consumer was physics_system.cpp; replaced by b3World_CastRayClosest (§4a).
+src/systems/physics_system.h / .cpp	Keep, rewrite. Class/API shape (PhysicsSystem::update(registry, dt), throttleResponse/steerResponse/maxSteerAngleRad tunables) stays; internals rewired per §4.
+src/ecs/components.h	Modify. Remove PlaneCollider entirely. Remove or slim RigidBody (keep only fields still needed as spawn-time inputs / inspector display cache, per §3). Remove or slim BoxCollider similarly. Add new PhysicsBody { b3BodyId id; b3ShapeId shapeId; }. Velocity, CarInput, CarVehicle, WheelState, Transform — unchanged.
+src/app.h	Add b3WorldId b3World_;, float physicsAccumulator_ = 0.0f;, plus int physicsSubSteps_ / float physicsFixedStep_ members replacing the removed rigidBodySys_. Remove RigidBodySystem rigidBodySys_; member and its #include "systems/rigid_body_system.h". Add #include <box3d/box3d.h>.
+src/app.cpp	Rewrite tickSystems (§2), initGameEntities's player-car and ground-construction blocks plus spawnStaticBox/spawnPushable (§3 — all four now build b3BodyDef/b3ShapeDef/b3CreateBody/b3CreateHullShape instead of emplacing RigidBody/BoxCollider/PlaneCollider), the inspector panel block (§5), drawGizmo (§5), initGame/shutdown (§2 world lifecycle).
+.gitmodules / submodule pin	Already added per the brief; no action beyond noting the commit is pinned (see §8).
+7. Staging / phasing
+Given this replaces the entire physics core of a working game, land it incrementally, each phase independently buildable/runnable via make run:
 
-- Convert: `glm::transpose(Transform::toMatrix())` → `float matrix[16]`
-- Pass `matrix` to `ImGuizmo::Manipulate()`
-- After Manipulate, convert back by treating `float[16]` as a transposed
-  `glm::mat4`, then extract position/rotation/scale
-
-Note: `ImGuizmo::DecomposeMatrixToComponents` has known numerical stability
-issues per ImGuizmo docs, but is acceptable for editor use. The direct matrix
-from `Manipulate()` is the primary path; decompose is only for the InputFloat3
-UI widgets.
-
-## Tradeoffs
-
-1. **Gizmo rendered over viewport**: Using `SetRect(0,0,vpW_,vpH_)` matches the
-   viewport background window so the gizmo aligns with the 3D render. Simpler
-   and matches the README example.
-
-2. **Skip systems when gizmo active**: Prevents physics from overriding manual
-   positioning. Car won't respond to input while manipulating — correct behavior
-   for a transform editor.
-
-3. **Any Transform entity**: Camera, lights, world items, and player all have
-   `Transform` components, so all will work with the gizmo.
+Phase 0 — build plumbing only. Land the Makefile changes (§1) with box3d compiling and linking into the native binary, gated behind a trivial smoke test: add a temporary #include <box3d/box3d.h> + a scratch b3CreateWorld/b3World_Step/b3DestroyWorld call in main.cpp (or a throwaway test target) that prints a falling box's Y position for a few steps, matching the hello.md example almost verbatim. Confirm native build succeeds and prints sane values. Then attempt the web build (make web) with the same smoke test — this is the actual, empirical answer to "does box3d compile cleanly under Emscripten's C17 support," which should be verified here rather than assumed, per the brief. Remove the scratch code once both builds are confirmed; this phase produces no gameplay change.
+Phase 1 — world lifecycle + static geometry. Add b3WorldId to App, create/destroy it at the right points (§2), migrate the ground plane and spawnStaticBox obstacles (§3) to real box3d static bodies, but leave the player car and pushables on the old RigidBodySystem/PhysicsSystem path temporarily (both systems coexist: box3d simulates statics that nothing yet collides with, old system still drives the car against its old PlaneCollider/BoxCollider components in parallel). This sounds odd but is low-risk: it validates body/shape creation and the accumulator-driven b3World_Step call in isolation before anything depends on its output. Visually confirm via make run that obstacle placement/orientation still renders correctly (Transform is still being driven by the old system at this point, so box3d's static bodies are inert scenery from the game's perspective — this phase is really "build confidence in body/shape construction code," not yet a visible behavior change).
+Phase 2 — pushable props. Migrate spawnPushable entities to real dynamic box3d bodies, add syncTransformsFromBox3D for dynamic bodies (§2), keep the player car still on the old system. Playtest: drive the old-physics car into new-physics crates/barrels — this cross-system collision won't work yet (different worlds essentially, since the old car isn't in box3d), so this phase's test is purely "do untouched pushables fall, settle, and rest correctly under box3d's own gravity/contacts" (drop a stack of crates, confirm they land and stop without jitter, comparable to old behavior).
+Phase 3 — player car body (chassis only, no suspension yet). Migrate the player car's RigidBody/BoxCollider to a real box3d dynamic body per §3, but temporarily stub PhysicsSystem::update to do nothing (car has no drive/suspension forces, just gravity + the chassis hull settling on the ground per the §3 skipGroundCollision decision). Confirm via make run the car spawns, falls, and rests under gravity without exploding/tunneling, and that the camera (which reads Transform) still follows a physically-simulated body correctly.
+Phase 4 — suspension + drive forces. Rewrite PhysicsSystem::update per §4 (raycasts via b3World_CastRayClosest, forces via b3Body_ApplyForce), wire the accumulator's once-per-tick call ordering from §2/§4c. This is the highest-risk phase for game feel — budget the most playtesting time here. Test: drive forward/reverse/turn/handbrake, confirm wheel grounded/compression debug readout (already in the inspector, app.cpp ~815-825) looks sane, confirm no suspension jitter/oscillation; iterate on kFixedStep per the §4c mitigation ladder if needed.
+Phase 5 — editor/inspector + gizmo. Land the §5 changes: rewritten inspector panel reading live box3d state, drawGizmo's b3Body_SetTransform write-back, resolve the playerGizmoMoved_ question. Test: select the car/an obstacle/a pushable in the inspector, confirm live velocity/mass/friction readouts look plausible; drag the gizmo on the player car mid-game, release, confirm the car resumes simulating from the new position without a velocity spike or falling through the floor.
+Phase 6 — cleanup. Delete rigid_body_system.h/.cpp, raycast.h, remove the coexistence code paths from Phase 1-2, remove now-dead RigidBody/BoxCollider/PlaneCollider fields per §3/§6, remove #include "systems/rigid_body_system.h" from app.h. Full make run regression pass: player car drives correctly (accelerate/brake/reverse/steer/handbrake-drift), collides with and is stopped by obstacles (ObstacleTag/spawnStaticBox entities — ramps/bumps/barriers/platforms), pushes PushableTag crates/barrels around realistically, gizmo translate/rotate/scale still functions on car/camera/light/obstacles, make web build still succeeds and runs in-browser (docs/index.html) with equivalent behavior, no console/ImGui-log warnings about invalid b3BodyId/b3ShapeId usage.
+8. Risks specific to this project
+API churn: box3d is pre-1.0 (v0.1.0 + 20 commits), PRs disabled upstream (issue-only). Pin the submodule to its current commit explicitly (git -C lib/box3d rev-parse HEAD, record it, e.g. in a comment in the Makefile or a note in this plan) so a routine git submodule update --remote doesn't silently break the build with a renamed symbol. Treat any future upgrade as a deliberate, tested migration, not a passive submodule bump.
+No save/restore of world state: confirmed via repo-wide grep — this project has no save-game, checkpoint, undo, or replay/demo-recording feature today (InputSystem's header comment mentions "replay" only as a hypothetical future extension point, not an implemented feature; no other save/serialize/checkpoint code exists). This is a non-issue for the current codebase, but worth flagging explicitly to the user: if a save-game feature is ever added later, box3d's lack of world snapshot/restore (despite having recording.c/recording_replay.c/world_snapshot.c in its own source list — verify what those actually expose, since their presence suggests box3d may have some internal recording/replay facility beyond what the brief's FAQ summary implied; this is worth a dedicated header read of any b3World_*Record*/b3World_*Snapshot* public API before assuming there's truly nothing usable) would need a hand-rolled component-level save/restore (position/velocity/etc. of every body), which is straightforward but not automatic.
+Determinism/replay: no existing dependency found (see above) — no risk today.
+Web/Wasm build risk: flagged in Phase 0 as an empirical check, not an assumption. Additional risk beyond SIMD: box3d's optional multithreading path (scheduler.c, parallel_for.c, parallel_joint.c) references task-system hooks (workerCount/enqueueTask/finishTask in b3WorldDef) — since this project's web target has no pthread flags in WEB_EMS/WEB_LDFLAGS today, leaving workerCount at its default (0/unset) keeps box3d single-threaded, avoiding any need for -pthread/-s USE_PTHREADS=1/SharedArrayBuffer complexity in the web build. Explicitly do not set workerCount in b3WorldDef for either target.
+Chassis-vs-ground contact fighting the suspension (§3's skipGroundCollision gap): flagged as an open design decision, not silently resolved — needs a playtesting call in Phase 3/4.
+Force-reapplication-rate game feel (§4c): flagged with a concrete mitigation ladder, needs playtesting in Phase 4, not assumed to be a non-issue.
+Verification/testing summary (per phase, via make run unless noted)
+Phase 0: make and make web both succeed; scratch smoke test prints a box falling under gravity and settling near y≈-9 (per hello.md's own ground-at-y=-10, box radius 1 → rests around y≈-9) on both native and web consoles.
+Phase 1: make run — obstacles render at their configured positions/orientations, unchanged from pre-migration baseline (visual diff against current main/pre-change build).
+Phase 2: make run — spawn pushables, confirm they fall and settle at rest under box3d gravity without visible jitter or slow sinking through the ground box.
+Phase 3: make run — player car spawns, falls, and rests level on the ground under gravity alone (no drive input yet); camera follow still tracks it correctly.
+Phase 4: make run — full drive test matrix: forward accel to top speed, braking to stop, reverse, left/right steering at speed, handbrake drift (rear grip should drop per existing gripFactor logic), driving over an obstacle/ramp (suspension compression visible in the wheel debug readout), confirm no chassis oscillation/explosion.
+Phase 5: make run — inspector panel shows live, non-stale mass/velocity/friction for the selected entity; gizmo-move the player car mid-simulation, release, confirm it resumes falling/driving correctly from the new pose without a velocity spike.
+Phase 6: full regression per the Phase 6 bullet list above, on both make run (native) and make serve/docs/index.html (web), plus a check that git grep -n "RigidBodySystem\|rbAddForce\|rbGetPointVelocity\|raycastPlane\|raycastBox\|PlaneCollider" across src/ returns nothing (confirms complete removal of the old API surface).
+Critical Files for Implementation
+/Users/raybello/Github/CaRPG/Makefile
+/Users/raybello/Github/CaRPG/src/app.cpp
+/Users/raybello/Github/CaRPG/src/app.h
+/Users/raybello/Github/CaRPG/src/ecs/components.h
+/Users/raybello/Github/CaRPG/src/systems/physics_system.cpp
+/Users/raybello/Github/CaRPG/src/systems/rigid_body_system.cpp
+/Users/raybello/Github/CaRPG/lib/box3d/include/box3d/box3d.h
