@@ -168,7 +168,7 @@ struct WheelState {
 
 // ---------------------------------------------------------------------------
 // CarVehicle — top-level vehicle component; holds the 4-wheel suspension state
-// and smoothed drive inputs. Added to the player entity alongside RigidBody.
+// and smoothed drive inputs. Added to the player entity alongside PhysicsBody.
 // ---------------------------------------------------------------------------
 struct CarVehicle {
     static constexpr int kWheelCount = 4;
