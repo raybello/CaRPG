@@ -189,6 +189,10 @@ void App::initGameEntities() {
         shapeDef.density                = boxDensityFromMass(1500.0f, he);
         shapeDef.baseMaterial.restitution = 0.05f;
         shapeDef.baseMaterial.friction    = 0.8f;
+        // Tagged so the wheel suspension raycasts (PhysicsSystem) can
+        // exclude the chassis's own hull; collides with everything else
+        // normally since maskBits stays at its all-bits default.
+        shapeDef.filter.categoryBits     = kCategoryChassis;
         b3BoxHull hull = b3MakeBoxHull(he.x, he.y, he.z);
         b3ShapeId shapeId = b3CreateHullShape(bodyId, &shapeDef, &hull.base);
 
