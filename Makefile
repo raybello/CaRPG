@@ -35,7 +35,6 @@ APP_SRCS := \
     $(SRC_DIR)/game/item_catalog.cpp \
     $(SRC_DIR)/systems/input_system.cpp \
     $(SRC_DIR)/systems/physics_system.cpp \
-    $(SRC_DIR)/systems/rigid_body_system.cpp \
     $(SRC_DIR)/systems/fuel_system.cpp \
     $(SRC_DIR)/systems/stat_system.cpp \
     $(SRC_DIR)/systems/item_system.cpp \
