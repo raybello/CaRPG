@@ -179,8 +179,10 @@ bool HudTexture::init(int w, int h) {
 
     glGenTextures(1, &tex_);
     glBindTexture(GL_TEXTURE_2D, tex_);
+    // Upload the zeroed pixels_ buffer (not nullptr) so the texture is never
+    // sampled in an "incomplete" state if a draw happens before the first update().
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w_, h_, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+                 GL_RGBA, GL_UNSIGNED_BYTE, pixels_.data());
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);

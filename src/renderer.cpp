@@ -212,7 +212,10 @@ void Renderer::resize(int w, int h) {
 
     glGenTextures(1, &colorTex_);
     glBindTexture(GL_TEXTURE_2D, colorTex_);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    // Upload zeroed pixels (not nullptr) so the browser never has to lazily
+    // zero-fill this texture if it's sampled before the first render pass.
+    std::vector<uint8_t> blank((size_t)w * h * 4, 0);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, blank.data());
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);

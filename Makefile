@@ -128,6 +128,8 @@ WEB_CFLAGS     := $(COMMON_CFLAGS) -Os -DBOX3D_DISABLE_SIMD -D_POSIX_C_SOURCE=20
 WEB_LDFLAGS    := -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 -s NO_EXIT_RUNTIME=0 \
                   -s ASSERTIONS=1 -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
                   -s USE_WEBGL2=1 -s MIN_WEBGL_VERSION=2 \
+                  -s EXPORTED_FUNCTIONS=_main,_malloc,_free \
+                  -s EXPORTED_RUNTIME_METHODS=ccall,cwrap \
                   $(WEB_EMS) \
                   --shell-file $(IMGUI_DIR)/examples/libs/emscripten/shell_minimal.html
 

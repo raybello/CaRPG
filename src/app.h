@@ -49,7 +49,7 @@ private:
     Renderer renderer_;
 
     // Panel UI state
-    bool      showPanel_       = true;
+    bool      showPanel_       = false;
     bool      showShaderPopup_ = false;
 
     ImGuizmo::OPERATION gizmoOperation_ = ImGuizmo::TRANSLATE;

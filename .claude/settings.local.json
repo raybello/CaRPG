@@ -10,7 +10,26 @@
       "Bash(brew install *)",
       "Bash(make clean-web *)",
       "Bash(make web *)",
-      "Bash(./build/web3d)"
+      "Bash(./build/web3d)",
+      "Bash(git submodule *)",
+      "Bash(g++ --version)",
+      "Bash(gcc --version)",
+      "Bash(emcc --version)",
+      "Bash(git config *)",
+      "Bash(xargs -n1 basename)",
+      "Read(//tmp/**)",
+      "Bash(grep -A12 \"^BOX3D_SRCS := \\\\\\\\\\\\\\\\\" Makefile | grep -oE '[a-z_]+\\\\.c' | wc -l *)",
+      "Bash(g++ -std=c++20 -Ilib/box3d/include -O2 -g -o /tmp/smoke_native /tmp/smoke_test.cpp /tmp/box3d_smoke_obj/*.o)",
+      "Bash(/tmp/smoke_native)",
+      "Bash(emcc -std=c17 -D_POSIX_C_SOURCE=200809L -Wall -Ilib/box3d/include -Os -DBOX3D_DISABLE_SIMD -c -o /tmp/box3d_web_obj/timer.o lib/box3d/src/timer.c)",
+      "Bash(em++ -std=c++20 -Ilib/box3d/include -Os -s WASM=1 -s ASSERTIONS=1 -s ENVIRONMENT=node -o /tmp/smoke_web.js /tmp/smoke_test.cpp /tmp/box3d_web_obj/*.o)",
+      "Bash(node /tmp/smoke_web.js)",
+      "Bash(rm -rf /tmp/box3d_smoke_obj /tmp/box3d_web_obj /tmp/smoke_test.cpp /tmp/smoke_native /tmp/smoke_web.js /tmp/smoke_web.wasm /tmp/web_err*.log /tmp/main.cpp.bak /tmp/plan_list.txt /tmp/actual_list.txt /tmp/makefile_list.txt)",
+      "Bash(make clean *)",
+      "Bash(time make native)"
+    ],
+    "additionalDirectories": [
+      "/tmp"
     ]
   }
 }

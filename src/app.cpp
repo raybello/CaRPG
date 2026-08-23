@@ -109,6 +109,12 @@ bool App::initScene() {
 
 namespace {
 
+// Drop heights added on top of a spawn's resting position so items/crates
+// visibly fall and bounce into place — a visible signal that physics is
+// running, rather than just appearing at rest.
+constexpr float kItemDropHeight = 5.0f;
+constexpr float kBoxDropHeight  = 5.0f;
+
 // Density that yields the given total mass for a uniform-density box —
 // used so spawn* functions can keep specifying mass directly, matching the
 // old RigidBody-based tuning values, instead of density.
@@ -369,9 +375,9 @@ void App::spawnWorldItem(ItemId id, const glm::vec3& pos) {
     auto ent = registry_.create();
     registry_.emplace<ItemWorldTag>(ent);
     Transform tf;
-    // Spawn slightly above the ground so they drop and bounce on first frame
+    // Spawn well above the ground so they drop and bounce into place
     // — visible signal that physics is running.
-    tf.position = pos + glm::vec3(0.0f, 1.2f, 0.0f);
+    tf.position = pos + glm::vec3(0.0f, kItemDropHeight, 0.0f);
     tf.scale    = glm::vec3(0.4f);
     registry_.emplace<Transform>(ent, tf);
     MeshId mesh = def ? def->meshId : MeshId::Cube;
@@ -441,8 +447,12 @@ entt::entity App::spawnPushable(const glm::vec3& pos, const glm::vec3& halfExten
     auto ent = registry_.create();
     registry_.emplace<PushableTag>(ent);
 
+    // Spawn above the resting position so crates visibly fall and bounce
+    // into place — a visible signal that physics is running.
+    const glm::vec3 spawnPos = pos + glm::vec3(0.0f, kBoxDropHeight, 0.0f);
+
     Transform tf;
-    tf.position = pos;
+    tf.position = spawnPos;
     tf.scale    = halfExtents * 2.0f;
     registry_.emplace<Transform>(ent, tf);
 
@@ -453,7 +463,7 @@ entt::entity App::spawnPushable(const glm::vec3& pos, const glm::vec3& halfExten
 
     b3BodyDef bodyDef      = b3DefaultBodyDef();
     bodyDef.type           = b3_dynamicBody;
-    bodyDef.position       = toB3(pos);
+    bodyDef.position       = toB3(spawnPos);
     bodyDef.linearDamping  = 0.35f;
     bodyDef.angularDamping = 0.45f;
     b3BodyId bodyId = b3CreateBody(b3World_, &bodyDef);
