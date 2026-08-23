@@ -9,9 +9,9 @@ typedef void* SDL_GLContext;
 #include "scene.h"
 #include "renderer.h"
 #include <entt/entt.hpp>
+#include <box3d/box3d.h>
 #include "systems/input_system.h"
 #include "systems/physics_system.h"
-#include "systems/rigid_body_system.h"
 #include "systems/fuel_system.h"
 #include "systems/stat_system.h"
 #include "systems/item_system.h"
@@ -74,7 +74,6 @@ private:
     // Systems
     InputSystem    inputSys_;
     PhysicsSystem  physicsSys_;
-    RigidBodySystem rigidBodySys_;
     FuelSystem     fuelSys_;
     StatSystem     statSys_;
     ItemSystem     itemSys_;
@@ -86,8 +85,15 @@ private:
     InventoryPanel inventoryPanel_;
     bool           gameRunning_ = true;
 
-    // Tracks when the gizmo last moved the player so physics skips Y reset that frame
-    bool playerGizmoMoved_ = false;
+    // box3d world — the sole owner of simulated body state; Transform is a
+    // read-only mirror refreshed each fixed tick (see syncTransformsFromBox3D).
+    b3WorldId b3World_          = b3_nullWorldId;
+    float     physicsAccumulator_      = 0.0f;
+    int       physicsSubSteps_         = 4;         // b3World_Step subStepCount (solver quality)
+    float     physicsFixedStep_        = 1.0f / 60.0f;
+    float     physicsContactHertz_     = 30.0f;     // mirrors b3DefaultWorldDef's defaults —
+    float     physicsContactDampingRatio_ = 10.0f;  // there is no live getter for these, only
+    float     physicsContactSpeed_     = 3.0f;      // b3World_SetContactTuning, so the UI owns them
 
     // Viewport size
     int vpW_ = 800;
@@ -113,6 +119,7 @@ private:
     void initGameEntities();
     void connectEventListeners();
     void tickSystems(float dt);
+    void syncTransformsFromBox3D();
     void drawGameUI();
     void syncShaderProgramsToRegistry();
     void spawnWorldItem(ItemId id, const glm::vec3& pos);

@@ -10,6 +10,7 @@
 #include "game/item_catalog.h"
 #include "game/game_events.h"
 #include "model_loader.h"
+#include "physics/box3d_interop.h"
 
 #include <SDL.h>
 #if defined(__EMSCRIPTEN__)
@@ -106,7 +107,33 @@ bool App::initScene() {
     return initGame();
 }
 
+namespace {
+
+// Density that yields the given total mass for a uniform-density box —
+// used so spawn* functions can keep specifying mass directly, matching the
+// old RigidBody-based tuning values, instead of density.
+float boxDensityFromMass(float mass, const glm::vec3& halfExtents) {
+    float volume = 8.0f * halfExtents.x * halfExtents.y * halfExtents.z;
+    return (volume > 1e-8f) ? mass / volume : 1.0f;
+}
+
+// box3d has no automatic per-entity cleanup, so a PhysicsBody's body is
+// destroyed whenever its component is (entity destruction on item pickup,
+// or App::shutdown()'s explicit registry_.clear<PhysicsBody>()) — otherwise
+// the body and its shape would leak and keep colliding invisibly forever.
+void onPhysicsBodyDestroyed(entt::registry& reg, entt::entity e) {
+    const auto& pb = reg.get<PhysicsBody>(e);
+    if (!B3_IS_NULL(pb.id)) b3DestroyBody(pb.id);
+}
+
+}  // namespace
+
 bool App::initGame() {
+    b3WorldDef worldDef = b3DefaultWorldDef();
+    worldDef.gravity    = toB3(glm::vec3(0.0f, -9.81f, 0.0f));
+    b3World_ = b3CreateWorld(&worldDef);
+    registry_.on_destroy<PhysicsBody>().connect<&onPhysicsBodyDestroyed>();
+
     initGameEntities();
     connectEventListeners();
     return true;
@@ -143,28 +170,34 @@ void App::initGameEntities() {
     }
     registry_.emplace<Inventory>(playerEntity_);
     {
-        // Player car: fully dynamic body. Suspension spring forces hold it up.
-        // skipGroundCollision prevents the SAT ground impulse from fighting the spring.
-        BoxCollider bc;
-        bc.halfExtents        = glm::vec3(1.0f, 0.5f, 2.0f);
-        bc.skipGroundCollision = true;
-        registry_.emplace<BoxCollider>(playerEntity_, bc);
+        // Player car: fully dynamic body. Suspension spring forces (added in
+        // PhysicsSystem) hold it up against gravity.
+        const glm::vec3 he(1.0f, 0.5f, 2.0f);
 
         // Spawn slightly above ground so suspension settles naturally.
-        registry_.get<Transform>(playerEntity_).position.y = 0.6f;
+        glm::vec3 spawnPos(0.0f, 0.6f, 0.0f);
+        registry_.get<Transform>(playerEntity_).position = spawnPos;
 
-        RigidBody rb;
-        rb.mass            = 1500.0f;
-        rb.inverseMass     = 1.0f / 1500.0f;
-        rb.kinematic       = false;
-        rb.useGravity      = true;             // suspension holds the car up
-        rb.invInertiaLocal = RigidBodySystem::boxInvInertia(1500.0f,
-                                glm::vec3(1.0f, 0.35f, 2.0f)); // tighter Y → harder to roll
-        rb.restitution     = 0.05f;
-        rb.friction        = 0.8f;
-        rb.linearDamping   = 0.02f;
-        rb.angularDamping  = 0.85f;            // damp roll/pitch but allow them
-        registry_.emplace<RigidBody>(playerEntity_, rb);
+        b3BodyDef bodyDef      = b3DefaultBodyDef();
+        bodyDef.type           = b3_dynamicBody;
+        bodyDef.position       = toB3(spawnPos);
+        bodyDef.linearDamping  = 0.02f;
+        bodyDef.angularDamping = 0.85f;   // damp roll/pitch but allow them
+        b3BodyId bodyId = b3CreateBody(b3World_, &bodyDef);
+
+        b3ShapeDef shapeDef             = b3DefaultShapeDef();
+        shapeDef.density                = boxDensityFromMass(1500.0f, he);
+        shapeDef.baseMaterial.restitution = 0.05f;
+        shapeDef.baseMaterial.friction    = 0.8f;
+        // Tagged so the wheel suspension raycasts (PhysicsSystem) can
+        // exclude the chassis's own hull; collides with everything else
+        // normally since maskBits stays at its all-bits default.
+        shapeDef.filter.categoryBits     = kCategoryChassis;
+        b3BoxHull hull = b3MakeBoxHull(he.x, he.y, he.z);
+        b3ShapeId shapeId = b3CreateHullShape(bodyId, &shapeDef, &hull.base);
+
+        registry_.emplace<BoxCollider>(playerEntity_, BoxCollider{he});
+        registry_.emplace<PhysicsBody>(playerEntity_, PhysicsBody{bodyId, shapeId});
 
         // 4-wheel suspension layout (car-local space):
         //   [0]=front-left  [1]=front-right  [2]=rear-left  [3]=rear-right
@@ -215,18 +248,24 @@ void App::initGameEntities() {
     registry_.emplace<Material>(ground, scene_.groundShader.program,
                                 glm::vec3(0.28f, 0.30f, 0.26f));
     {
-        // Ground: infinite plane at y = 0, fixed body.
-        PlaneCollider pc; pc.normal = glm::vec3(0.0f, 1.0f, 0.0f); pc.d = 0.0f;
-        registry_.emplace<PlaneCollider>(ground, pc);
-        RigidBody rb;
-        rb.mass            = 0.0f;
-        rb.inverseMass     = 0.0f;
-        rb.fixed           = true;
-        rb.useGravity      = false;
-        rb.invInertiaLocal = glm::mat3(0.0f);
-        rb.restitution     = 0.2f;
-        rb.friction        = 0.8f;
-        registry_.emplace<RigidBody>(ground, rb);
+        // box3d has no infinite-plane primitive, so the ground is a large,
+        // thin static box hull positioned so its top face sits at y = 0 —
+        // buried well below the thin visual ground quad, which is unaffected.
+        const glm::vec3 he(50.0f, 10.0f, 50.0f);
+        const glm::vec3 pos(0.0f, -10.0f, 0.0f);
+
+        b3BodyDef bodyDef = b3DefaultBodyDef();
+        bodyDef.type      = b3_staticBody;
+        bodyDef.position  = toB3(pos);
+        b3BodyId bodyId = b3CreateBody(b3World_, &bodyDef);
+
+        b3ShapeDef shapeDef             = b3DefaultShapeDef();
+        shapeDef.baseMaterial.restitution = 0.2f;
+        shapeDef.baseMaterial.friction    = 0.8f;
+        b3BoxHull hull = b3MakeBoxHull(he.x, he.y, he.z);
+        b3ShapeId shapeId = b3CreateHullShape(bodyId, &shapeDef, &hull.base);
+
+        registry_.emplace<PhysicsBody>(ground, PhysicsBody{bodyId, shapeId});
     }
 
     // --- Directional light — rendered as a colored sphere ---
@@ -345,19 +384,23 @@ void App::spawnWorldItem(ItemId id, const glm::vec3& pos) {
     // collider matches the rendered cube/sphere mesh (both meshes are
     // unit-sized, scaled by Transform).
     glm::vec3 he = tf.scale * 0.5f;
-    BoxCollider bc; bc.halfExtents = he;
-    registry_.emplace<BoxCollider>(ent, bc);
+    registry_.emplace<BoxCollider>(ent, BoxCollider{he});
 
-    RigidBody rb;
-    rb.mass            = 1.0f;
-    rb.inverseMass     = 1.0f / rb.mass;
-    rb.invInertiaLocal = RigidBodySystem::boxInvInertia(rb.mass, he);
-    rb.restitution     = 0.45f;
-    rb.friction        = 0.55f;
-    rb.linearDamping   = 0.20f;
-    rb.angularDamping  = 0.40f;
-    rb.useGravity      = true;
-    registry_.emplace<RigidBody>(ent, rb);
+    b3BodyDef bodyDef      = b3DefaultBodyDef();
+    bodyDef.type           = b3_dynamicBody;
+    bodyDef.position       = toB3(tf.position);
+    bodyDef.linearDamping  = 0.20f;
+    bodyDef.angularDamping = 0.40f;
+    b3BodyId bodyId = b3CreateBody(b3World_, &bodyDef);
+
+    b3ShapeDef shapeDef             = b3DefaultShapeDef();
+    shapeDef.density                = boxDensityFromMass(1.0f, he);
+    shapeDef.baseMaterial.restitution = 0.45f;
+    shapeDef.baseMaterial.friction    = 0.55f;
+    b3BoxHull hull = b3MakeBoxHull(he.x, he.y, he.z);
+    b3ShapeId shapeId = b3CreateHullShape(bodyId, &shapeDef, &hull.base);
+
+    registry_.emplace<PhysicsBody>(ent, PhysicsBody{bodyId, shapeId});
 }
 
 entt::entity App::spawnStaticBox(const glm::vec3& pos, const glm::vec3& halfExtents,
@@ -375,19 +418,21 @@ entt::entity App::spawnStaticBox(const glm::vec3& pos, const glm::vec3& halfExte
     registry_.emplace<MeshRef>(ent, meshId);
     registry_.emplace<Material>(ent, scene_.cubeShader.program, color);
 
-    BoxCollider bc;
-    bc.halfExtents = halfExtents;
-    registry_.emplace<BoxCollider>(ent, bc);
+    registry_.emplace<BoxCollider>(ent, BoxCollider{halfExtents});
 
-    RigidBody rb;
-    rb.mass            = 0.0f;
-    rb.inverseMass     = 0.0f;
-    rb.fixed           = true;
-    rb.useGravity      = false;
-    rb.invInertiaLocal = glm::mat3(0.0f);
-    rb.restitution     = 0.25f;
-    rb.friction        = 0.75f;
-    registry_.emplace<RigidBody>(ent, rb);
+    b3BodyDef bodyDef = b3DefaultBodyDef();
+    bodyDef.type      = b3_staticBody;
+    bodyDef.position  = toB3(pos);
+    bodyDef.rotation  = toB3(rot);
+    b3BodyId bodyId = b3CreateBody(b3World_, &bodyDef);
+
+    b3ShapeDef shapeDef             = b3DefaultShapeDef();
+    shapeDef.baseMaterial.restitution = 0.25f;
+    shapeDef.baseMaterial.friction    = 0.75f;
+    b3BoxHull hull = b3MakeBoxHull(halfExtents.x, halfExtents.y, halfExtents.z);
+    b3ShapeId shapeId = b3CreateHullShape(bodyId, &shapeDef, &hull.base);
+
+    registry_.emplace<PhysicsBody>(ent, PhysicsBody{bodyId, shapeId});
     return ent;
 }
 
@@ -404,22 +449,23 @@ entt::entity App::spawnPushable(const glm::vec3& pos, const glm::vec3& halfExten
     registry_.emplace<MeshRef>(ent, MeshId::Cube);
     registry_.emplace<Material>(ent, scene_.cubeShader.program, color);
 
-    BoxCollider bc;
-    bc.halfExtents = halfExtents;
-    registry_.emplace<BoxCollider>(ent, bc);
+    registry_.emplace<BoxCollider>(ent, BoxCollider{halfExtents});
 
-    RigidBody rb;
-    rb.mass            = mass;
-    rb.inverseMass     = 1.0f / mass;
-    rb.fixed           = false;
-    rb.kinematic       = false;
-    rb.useGravity      = true;
-    rb.invInertiaLocal = RigidBodySystem::boxInvInertia(mass, halfExtents);
-    rb.restitution     = 0.3f;
-    rb.friction        = 0.65f;
-    rb.linearDamping   = 0.35f;
-    rb.angularDamping  = 0.45f;
-    registry_.emplace<RigidBody>(ent, rb);
+    b3BodyDef bodyDef      = b3DefaultBodyDef();
+    bodyDef.type           = b3_dynamicBody;
+    bodyDef.position       = toB3(pos);
+    bodyDef.linearDamping  = 0.35f;
+    bodyDef.angularDamping = 0.45f;
+    b3BodyId bodyId = b3CreateBody(b3World_, &bodyDef);
+
+    b3ShapeDef shapeDef             = b3DefaultShapeDef();
+    shapeDef.density                = boxDensityFromMass(mass, halfExtents);
+    shapeDef.baseMaterial.restitution = 0.3f;
+    shapeDef.baseMaterial.friction    = 0.65f;
+    b3BoxHull hull = b3MakeBoxHull(halfExtents.x, halfExtents.y, halfExtents.z);
+    b3ShapeId shapeId = b3CreateHullShape(bodyId, &shapeDef, &hull.base);
+
+    registry_.emplace<PhysicsBody>(ent, PhysicsBody{bodyId, shapeId});
     return ent;
 }
 
@@ -453,22 +499,38 @@ void App::tickSystems(float dt) {
 
     statSys_.update(registry_);
 
-    // PhysicsSystem is called once per substep via preStepCb so suspension
-    // spring forces are re-evaluated every integration step, not just once
-    // per frame. This prevents substeps 2-N from running with zero spring force.
-    playerGizmoMoved_ = false;
-    rigidBodySys_.preStepCb = [&](entt::registry& r, float h) {
-        physicsSys_.update(r, h);
-    };
-
-    // RigidBodySystem integrates forceAccum/angularVel → velocity → position
-    // for all dynamic entities including the player.
-    rigidBodySys_.update(registry_, dt);
+    // Fixed-tick accumulator: box3d wants exactly one b3World_Step per fixed
+    // timeStep (subStepCount is an internal solver-quality knob, not a
+    // repeat count), so suspension/drive forces are (re-)applied once per
+    // tick immediately before stepping — not once per rendered frame.
+    physicsAccumulator_ += dt;
+    constexpr int kMaxTicksPerFrame = 4;  // spiral-of-death guard
+    int ticks = 0;
+    while (physicsAccumulator_ >= physicsFixedStep_ && ticks < kMaxTicksPerFrame) {
+        physicsSys_.update(registry_, physicsFixedStep_);
+        b3World_Step(b3World_, physicsFixedStep_, physicsSubSteps_);
+        syncTransformsFromBox3D();
+        physicsAccumulator_ -= physicsFixedStep_;
+        ++ticks;
+    }
+    if (ticks == kMaxTicksPerFrame) physicsAccumulator_ = 0.0f;  // drop backlog rather than spiral
 
     fuelSys_.update(registry_, dispatcher_, dt);
     itemSys_.update(registry_, dispatcher_, dt);
     cameraSys_.update(registry_, dt, vpW_, vpH_);
     dispatcher_.update();
+}
+
+void App::syncTransformsFromBox3D() {
+    // Static bodies never move and some (the ground) are deliberately offset
+    // from their entity's visual Transform (see spawn code), so only mirror
+    // bodies box3d can actually move.
+    registry_.view<Transform, PhysicsBody>().each(
+        [&](Transform& tf, const PhysicsBody& pb) {
+            if (b3Body_GetType(pb.id) != b3_dynamicBody) return;
+            tf.position = fromB3(b3Body_GetPosition(pb.id));
+            tf.rotation = fromB3(b3Body_GetRotation(pb.id));
+        });
 }
 
 void App::drawGameUI() {
@@ -743,26 +805,40 @@ void App::drawPanel() {
                 ImGui::ColorEdit3("Color", &mat->color.x);
                 ImGui::Checkbox("Visible", &mat->visible);
             }
-            // Rigid body (live state + tunables)
-            if (auto* rb = registry_.try_get<RigidBody>(selectedEntity_)) {
+            // Physics body (live state + tunables, read straight from box3d —
+            // there is no ECS-side cache to go stale).
+            if (auto* pb = registry_.try_get<PhysicsBody>(selectedEntity_)) {
                 ImGui::Separator();
-                ImGui::TextDisabled("Rigid Body");
-                const char* kind = rb->fixed     ? "fixed"
-                                 : rb->kinematic ? "kinematic"
-                                                 : "dynamic";
+                ImGui::TextDisabled("Physics Body");
+                b3BodyType type = b3Body_GetType(pb->id);
+                const char* kind = type == b3_staticBody    ? "static"
+                                 : type == b3_kinematicBody ? "kinematic"
+                                                             : "dynamic";
                 ImGui::Text("Type: %s", kind);
-                ImGui::Text("Mass: %.2f kg", rb->mass);
-                ImGui::SliderFloat("Restitution", &rb->restitution, 0.0f, 1.0f);
-                ImGui::SliderFloat("Friction",    &rb->friction,    0.0f, 2.0f);
-                if (!rb->fixed && !rb->kinematic) {
-                    ImGui::SliderFloat("Lin Damp", &rb->linearDamping,  0.0f, 5.0f);
-                    ImGui::SliderFloat("Ang Damp", &rb->angularDamping, 0.0f, 5.0f);
-                    ImGui::Checkbox("Gravity", &rb->useGravity);
+                ImGui::Text("Mass: %.2f kg", b3Body_GetMass(pb->id));
+
+                float restitution = b3Shape_GetRestitution(pb->shapeId);
+                if (ImGui::SliderFloat("Restitution", &restitution, 0.0f, 1.0f))
+                    b3Shape_SetRestitution(pb->shapeId, restitution);
+                float friction = b3Shape_GetFriction(pb->shapeId);
+                if (ImGui::SliderFloat("Friction", &friction, 0.0f, 2.0f))
+                    b3Shape_SetFriction(pb->shapeId, friction);
+
+                if (type == b3_dynamicBody) {
+                    float linDamp = b3Body_GetLinearDamping(pb->id);
+                    if (ImGui::SliderFloat("Lin Damp", &linDamp, 0.0f, 5.0f))
+                        b3Body_SetLinearDamping(pb->id, linDamp);
+                    float angDamp = b3Body_GetAngularDamping(pb->id);
+                    if (ImGui::SliderFloat("Ang Damp", &angDamp, 0.0f, 5.0f))
+                        b3Body_SetAngularDamping(pb->id, angDamp);
+                    bool gravityOn = b3Body_GetGravityScale(pb->id) > 0.5f;
+                    if (ImGui::Checkbox("Gravity", &gravityOn))
+                        b3Body_SetGravityScale(pb->id, gravityOn ? 1.0f : 0.0f);
                 }
-                ImGui::Text("v   %.2f, %.2f, %.2f",
-                            rb->linearVel.x, rb->linearVel.y, rb->linearVel.z);
-                ImGui::Text("ω   %.2f, %.2f, %.2f",
-                            rb->angularVel.x, rb->angularVel.y, rb->angularVel.z);
+                glm::vec3 v = fromB3(b3Body_GetLinearVelocity(pb->id));
+                glm::vec3 w = fromB3(b3Body_GetAngularVelocity(pb->id));
+                ImGui::Text("v   %.2f, %.2f, %.2f", v.x, v.y, v.z);
+                ImGui::Text("ω   %.2f, %.2f, %.2f", w.x, w.y, w.z);
                 if (auto* bx = registry_.try_get<BoxCollider>(selectedEntity_)) {
                     ImGui::Text("Box he: %.2f, %.2f, %.2f",
                                 bx->halfExtents.x, bx->halfExtents.y, bx->halfExtents.z);
@@ -832,13 +908,24 @@ void App::drawPanel() {
 
     ImGui::Separator();
 
-    // ---- Rigid body physics --------------------------------------------
-    if (ImGui::CollapsingHeader("Rigid Body Physics", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::SliderFloat3("Gravity",      &rigidBodySys_.gravity.x,       -30.0f, 30.0f);
-        ImGui::SliderInt   ("Max Substeps", &rigidBodySys_.maxSubsteps,      1, 16);
-        ImGui::SliderFloat ("Fixed Step",   &rigidBodySys_.fixedStep,        1.0f/240.0f, 1.0f/30.0f);
-        ImGui::SliderFloat ("Pos Bias",     &rigidBodySys_.positionalBias,   0.0f, 1.0f);
-        ImGui::SliderFloat ("Pen Slop",     &rigidBodySys_.penetrationSlop,  0.0f, 0.05f);
+    // ---- World physics (box3d) -------------------------------------------
+    if (ImGui::CollapsingHeader("World Physics", ImGuiTreeNodeFlags_DefaultOpen)) {
+        glm::vec3 gravity = fromB3(b3World_GetGravity(b3World_));
+        if (ImGui::SliderFloat3("Gravity", &gravity.x, -30.0f, 30.0f))
+            b3World_SetGravity(b3World_, toB3(gravity));
+        ImGui::SliderInt  ("Sub-Steps (solver quality)", &physicsSubSteps_, 1, 16);
+        ImGui::SliderFloat("Fixed Step",                 &physicsFixedStep_, 1.0f/240.0f, 1.0f/30.0f);
+
+        // b3World_SetContactTuning has no matching getter, so the sliders
+        // own these values and push them on change rather than reading back.
+        ImGui::TextDisabled("Contact softness");
+        bool tuningChanged = false;
+        tuningChanged |= ImGui::SliderFloat("Contact Hertz",   &physicsContactHertz_,        1.0f, 60.0f);
+        tuningChanged |= ImGui::SliderFloat("Contact Damping", &physicsContactDampingRatio_, 0.0f, 20.0f);
+        tuningChanged |= ImGui::SliderFloat("Contact Speed",   &physicsContactSpeed_,        0.1f, 10.0f);
+        if (tuningChanged)
+            b3World_SetContactTuning(b3World_, physicsContactHertz_,
+                                      physicsContactDampingRatio_, physicsContactSpeed_);
     }
 
     ImGui::Separator();
@@ -1056,13 +1143,19 @@ void App::drawGizmo() {
 
             auto* follow = registry_.try_get<CameraFollow>(cameraEcsEntity_);
             if (follow) follow->enabled = false;
-        } else if (selectedEntity_ == playerEntity_) {
-            // Signal physics to skip the Y=0 ground-lock for one frame so
-            // the gizmo-placed position survives the first simulation tick.
-            playerGizmoMoved_ = true;
         } else if (auto* dl = registry_.try_get<DirectionalLight>(selectedEntity_)) {
             // Keep DirectionalLight.position in sync with the gizmo-moved Transform.
             dl->position = tf->position;
+        }
+
+        // Push the edit into box3d as a teleport, and zero out momentum —
+        // otherwise the next syncTransformsFromBox3D() overwrites the gizmo's
+        // edit with box3d's stale pose, and any carried-over velocity could
+        // produce a violent contact-resolution spike on the next step.
+        if (auto* pb = registry_.try_get<PhysicsBody>(selectedEntity_)) {
+            b3Body_SetTransform(pb->id, toB3(tf->position), toB3(tf->rotation));
+            b3Body_SetLinearVelocity(pb->id, b3Vec3{0.0f, 0.0f, 0.0f});
+            b3Body_SetAngularVelocity(pb->id, b3Vec3{0.0f, 0.0f, 0.0f});
         }
     }
 }
@@ -1106,11 +1199,10 @@ bool App::frame() {
                 auto& tf = registry_.get<Transform>(playerEntity_);
                 tf.position = glm::vec3(0.0f, 0.6f, 0.0f);
                 tf.rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-                if (auto* rb = registry_.try_get<RigidBody>(playerEntity_)) {
-                    rb->linearVel  = glm::vec3(0.0f);
-                    rb->angularVel = glm::vec3(0.0f);
-                    rb->forceAccum  = glm::vec3(0.0f);
-                    rb->torqueAccum = glm::vec3(0.0f);
+                if (auto* pb = registry_.try_get<PhysicsBody>(playerEntity_)) {
+                    b3Body_SetTransform(pb->id, toB3(tf.position), toB3(tf.rotation));
+                    b3Body_SetLinearVelocity(pb->id, b3Vec3{0.0f, 0.0f, 0.0f});
+                    b3Body_SetAngularVelocity(pb->id, b3Vec3{0.0f, 0.0f, 0.0f});
                 }
                 if (auto* vel = registry_.try_get<Velocity>(playerEntity_))
                     *vel = Velocity{};
@@ -1233,6 +1325,13 @@ void App::run() {
 }
 
 void App::shutdown() {
+    if (!B3_IS_NULL(b3World_)) {
+        // Destroy every box3d body via the on_destroy<PhysicsBody> hook
+        // (registered in initGame()) before tearing down the world itself.
+        registry_.clear<PhysicsBody>();
+        b3DestroyWorld(b3World_);
+        b3World_ = b3_nullWorldId;
+    }
     if (glctx_) {
         // Free GPU resources owned by any ModelMesh components
         registry_.view<ModelMesh>().each([](ModelMesh& mm) { destroyModelMesh(mm); });

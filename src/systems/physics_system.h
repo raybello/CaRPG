@@ -3,10 +3,12 @@
 
 // Per-wheel raycast suspension system.
 //
-// Replaces the bicycle model. Each frame (or substep via RigidBodySystem::preStepCb):
+// Replaces the bicycle model. Once per fixed physics tick (see App::tickSystems):
 //   1. Smooth CarInput → CarVehicle.appliedThrottle / appliedSteer
-//   2. For each wheel: raycast downward → suspension spring, lateral grip, drive force
-//   3. All forces accumulate via rbAddForceAtPosition → torques are implicit
+//   2. For each wheel: raycast downward (b3World_CastRayClosest) → suspension
+//      spring, lateral grip, drive force
+//   3. All forces accumulate via b3Body_ApplyForce → torques are computed by
+//      box3d from the force's application point
 //
 // The car body is fully dynamic (gravity + suspension) — no Y-constraint needed.
 class PhysicsSystem {

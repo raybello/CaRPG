@@ -1,22 +1,22 @@
 #include "physics_system.h"
 #include "ecs/components.h"
-#include "raycast.h"
-#include "rigid_body_system.h"
+#include "physics/box3d_interop.h"
 #include <glm/gtc/quaternion.hpp>
 #include <algorithm>
 #include <cmath>
-#include <vector>
 
 // =============================================================================
 // Per-wheel raycast suspension — replaces the bicycle model.
 //
-// For each of the 4 wheels each substep:
+// For each of the 4 wheels, once per fixed physics tick (see
+// App::tickSystems):
 //   a) Suspension spring:  springDir * (offset*K - vel*D)
 //   b) Lateral grip:       cancel sideways velocity at the tire contact point
 //   c) Drive / brake:      forward force through a power curve, or brake force
 //
-// All forces go through rbAddForceAtPosition so off-centre forces generate
-// torques automatically, producing natural weight transfer / roll.
+// All forces go through b3Body_ApplyForce so off-centre forces generate
+// torques automatically (box3d computes them from the force's application
+// point), producing natural weight transfer / roll.
 // =============================================================================
 
 namespace {
@@ -25,50 +25,24 @@ inline float safeF(float x, float fallback = 0.0f) {
     return std::isfinite(x) ? x : fallback;
 }
 
-// Collidable geometry description for per-wheel raycasting.
-// One entry per fixed entity that has a plane or box collider.
-struct CollidableRef {
-    const glm::vec3*  planeNormal = nullptr;   // non-null → plane collider
-    float             planeD      = 0.0f;
-    const glm::vec3*  boxCenter   = nullptr;   // non-null → box collider
-    const glm::vec3*  boxHalfExt  = nullptr;
-    const glm::quat*  boxRot      = nullptr;
-};
-
 }  // namespace
 
 void PhysicsSystem::update(entt::registry& reg, float dt) {
     if (!std::isfinite(dt) || dt <= 0.0f) return;
     dt = std::min(dt, 0.1f);
 
-    // --- Collect fixed collidable geometry (ground plane, fixed boxes) ---
-    std::vector<CollidableRef> collidables;
-    collidables.reserve(16);
+    // Wheel raycasts must not hit the car's own chassis hull (see
+    // kCategoryChassis) — everything else (ground, obstacles, pushable
+    // crates) keeps box3d's all-bits default filter and stays hittable.
+    b3QueryFilter wheelFilter = b3DefaultQueryFilter();
+    wheelFilter.maskBits      = ~kCategoryChassis;
 
-    reg.view<Transform, RigidBody>().each(
-        [&](entt::entity e, const Transform& tf, const RigidBody& rb) {
-            if (!rb.fixed) return;
-            CollidableRef cr;
-            bool useful = false;
-            if (const auto* pc = reg.try_get<PlaneCollider>(e)) {
-                cr.planeNormal = &pc->normal;
-                cr.planeD      = pc->d;
-                useful = true;
-            }
-            if (const auto* bc = reg.try_get<BoxCollider>(e)) {
-                cr.boxCenter   = &tf.position;
-                cr.boxHalfExt  = &bc->halfExtents;
-                cr.boxRot      = &tf.rotation;
-                useful = true;
-            }
-            if (useful) collidables.push_back(cr);
-        });
-
-    // --- Per-vehicle update ----------------------------------------------
-    auto view = reg.view<PlayerTag, Transform, RigidBody, CarInput, CarVehicle>();
+    auto view = reg.view<PlayerTag, Transform, PhysicsBody, CarInput, CarVehicle>();
     view.each([&](entt::entity e,
-                  Transform& tf, RigidBody& rb,
+                  Transform& tf, const PhysicsBody& pb,
                   const CarInput& rawInput, CarVehicle& cv) {
+
+        const b3WorldId world = b3Body_GetWorld(pb.id);
 
         // 1. Smooth inputs (exponential ramp toward raw target).
         const float kT = std::clamp(throttleResponse * dt, 0.0f, 1.0f);
@@ -87,9 +61,10 @@ void PhysicsSystem::update(entt::registry& reg, float dt) {
         cv.appliedThrottle  = std::clamp(safeF(cv.appliedThrottle), 0.0f, 1.0f);
         cv.appliedSteer     = std::clamp(safeF(cv.appliedSteer),   -1.0f, 1.0f);
 
-        const float topSpeed    = std::max(safeF(cv.topSpeed), 1.0f);
-        const glm::vec3 carFwd  = tf.rotation * glm::vec3(0.0f, 0.0f, -1.0f);
-        const float carSpeedFwd = safeF(glm::dot(carFwd, rb.linearVel));
+        const float topSpeed     = std::max(safeF(cv.topSpeed), 1.0f);
+        const glm::vec3 carFwd   = tf.rotation * glm::vec3(0.0f, 0.0f, -1.0f);
+        const glm::vec3 linVel   = fromB3(b3Body_GetLinearVelocity(pb.id));
+        const float carSpeedFwd  = safeF(glm::dot(carFwd, linVel));
 
         // 2. Per-wheel suspension + grip + drive.
         for (int i = 0; i < CarVehicle::kWheelCount; ++i) {
@@ -100,45 +75,38 @@ void PhysicsSystem::update(entt::registry& reg, float dt) {
             const glm::vec3 worldWheelPos = tf.position + tf.rotation * wheel.localOffset;
 
             // Ray from the top of suspension travel, firing downward.
-            const Ray   ray        { worldWheelPos + worldUp * wheel.suspensionTravel, -worldUp };
             const float maxRayDist = wheel.suspensionRestDist + wheel.suspensionTravel;
+            const glm::vec3 rayOrigin      = worldWheelPos + worldUp * wheel.suspensionTravel;
+            const glm::vec3 rayTranslation = -worldUp * maxRayDist;
 
-            // Find the closest hit among all fixed collidables.
-            RaycastHit bestHit;
-            for (const auto& cr : collidables) {
-                RaycastHit h;
-                if (cr.planeNormal)
-                    h = raycastPlane(ray, *cr.planeNormal, cr.planeD);
-                else if (cr.boxCenter)
-                    h = raycastBox(ray, *cr.boxCenter, *cr.boxHalfExt, *cr.boxRot);
-                if (h.hit && h.distance <= maxRayDist) {
-                    if (!bestHit.hit || h.distance < bestHit.distance)
-                        bestHit = h;
-                }
-            }
+            b3RayResult hit = b3World_CastRayClosest(
+                world, toB3(rayOrigin), toB3(rayTranslation), wheelFilter);
 
-            wheel.grounded = bestHit.hit;
-            if (!bestHit.hit) {
+            wheel.grounded = hit.hit;
+            if (!hit.hit) {
                 wheel.compressionRatio = 0.0f;
                 wheel.contactDist      = 0.0f;
                 continue;
             }
 
-            wheel.contactDist      = bestHit.distance;
+            // fraction is 0..1 of the translation vector's length.
+            const float distance = hit.fraction * maxRayDist;
+            wheel.contactDist      = distance;
             wheel.compressionRatio = std::clamp(
-                1.0f - (bestHit.distance - wheel.suspensionRestDist) / wheel.suspensionTravel,
+                1.0f - (distance - wheel.suspensionRestDist) / wheel.suspensionTravel,
                 0.0f, 1.0f);
 
-            const glm::vec3 tireWorldVel = rbGetPointVelocity(rb, tf, worldWheelPos);
+            const glm::vec3 tireWorldVel =
+                fromB3(b3Body_GetWorldPointVelocity(pb.id, toB3(worldWheelPos)));
 
             // ---- a) Suspension spring-damper force ----------------------
-            const float offset     = wheel.suspensionRestDist - bestHit.distance;
+            const float offset     = wheel.suspensionRestDist - distance;
             const float velSpring  = glm::dot(worldUp, tireWorldVel);
             const float maxSpringF = wheel.springStrength * wheel.suspensionTravel * 2.0f;
             const float springForce = std::clamp(
                 offset * wheel.springStrength - velSpring * wheel.springDamper,
                 -maxSpringF, maxSpringF);
-            rbAddForceAtPosition(rb, tf, worldUp * springForce, worldWheelPos);
+            b3Body_ApplyForce(pb.id, toB3(worldUp * springForce), toB3(worldWheelPos), true);
 
             // ---- b) Lateral grip force ----------------------------------
             // Steer the front wheels; rear wheels point straight.
@@ -154,8 +122,8 @@ void PhysicsSystem::update(entt::registry& reg, float dt) {
 
             const float steeringVel  = glm::dot(wheelRight, tireWorldVel);
             const float desiredAccel = (-steeringVel * gripMul) / dt;
-            rbAddForceAtPosition(rb, tf,
-                wheelRight * wheel.wheelMass * desiredAccel, worldWheelPos);
+            b3Body_ApplyForce(pb.id,
+                toB3(wheelRight * wheel.wheelMass * desiredAccel), toB3(worldWheelPos), true);
 
             // ---- c) Drive / brake force ---------------------------------
             if (!wheel.isDriven) continue;
@@ -166,9 +134,9 @@ void PhysicsSystem::update(entt::registry& reg, float dt) {
             if (cv.appliedThrottle > 0.001f) {
                 float normSpeed = std::clamp(carSpeedFwd / topSpeed, 0.0f, 1.0f);
                 float torqueMul = std::max(0.0f, 1.0f - normSpeed);
-                rbAddForceAtPosition(rb, tf,
-                    wheelFwd * cv.maxTorque * torqueMul * cv.appliedThrottle,
-                    worldWheelPos);
+                b3Body_ApplyForce(pb.id,
+                    toB3(wheelFwd * cv.maxTorque * torqueMul * cv.appliedThrottle),
+                    toB3(worldWheelPos), true);
             }
 
             // Service brake / reverse — apply backward force until max reverse speed.
@@ -177,7 +145,7 @@ void PhysicsSystem::update(entt::registry& reg, float dt) {
                 const float maxReverseSpeed = topSpeed * 0.4f;
                 if (carSpeedFwd > -maxReverseSpeed) {
                     const float brakeTorque = cv.maxTorque * 0.8f * tgtBrake;
-                    rbAddForceAtPosition(rb, tf, -wheelFwd * brakeTorque, worldWheelPos);
+                    b3Body_ApplyForce(pb.id, toB3(-wheelFwd * brakeTorque), toB3(worldWheelPos), true);
                 }
             }
 
@@ -186,7 +154,7 @@ void PhysicsSystem::update(entt::registry& reg, float dt) {
             constexpr float kRolling = 100.0f;  // N per wheel
             if (std::fabs(carSpeedFwd) > 0.05f) {
                 float dir = (carSpeedFwd > 0.0f) ? -1.0f : 1.0f;
-                rbAddForceAtPosition(rb, tf, wheelFwd * kRolling * dir, worldWheelPos);
+                b3Body_ApplyForce(pb.id, toB3(wheelFwd * kRolling * dir), toB3(worldWheelPos), true);
             }
 
             // Engine braking when fully coasting — speed-proportional drag.
@@ -194,15 +162,15 @@ void PhysicsSystem::update(entt::registry& reg, float dt) {
             // direction: forward → backward force, backward → forward force.
             if (cv.appliedThrottle < 0.001f && tgtBrake < 0.01f) {
                 constexpr float kEngineBrake = 2.5f;
-                rbAddForceAtPosition(rb, tf,
-                    wheelFwd * (-carSpeedFwd) * kEngineBrake * wheel.wheelMass,
-                    worldWheelPos);
+                b3Body_ApplyForce(pb.id,
+                    toB3(wheelFwd * (-carSpeedFwd) * kEngineBrake * wheel.wheelMass),
+                    toB3(worldWheelPos), true);
             }
         }
 
         // 3. Sync Velocity component for HUD / camera.
         if (auto* vel = reg.try_get<Velocity>(e)) {
-            vel->linear          = rb.linearVel;
+            vel->linear          = linVel;
             vel->appliedThrottle = cv.appliedThrottle;
             vel->appliedSteer    = cv.appliedSteer;
         }
